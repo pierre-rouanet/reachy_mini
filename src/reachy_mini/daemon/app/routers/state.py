@@ -33,7 +33,7 @@ async def get_head_pose(
         AnyPose: The present head pose.
 
     """
-    return as_any_pose(backend.get_present_head_pose(), use_pose_matrix)
+    return as_any_pose(backend.get_current_head_pose(), use_pose_matrix)
 
 
 @router.get("/present_body_yaw")
@@ -41,7 +41,7 @@ async def get_body_yaw(
     backend: Backend = Depends(get_backend),
 ) -> float:
     """Get the present body yaw (in radians)."""
-    return backend.get_present_body_yaw()
+    return backend.get_current_body_yaw()
 
 
 @router.get("/present_antenna_joint_positions")
@@ -49,7 +49,7 @@ async def get_antenna_joint_positions(
     backend: Backend = Depends(get_backend),
 ) -> tuple[float, float]:
     """Get the present antenna joint positions (in radians) - (left, right)."""
-    pos = backend.get_present_antenna_joint_positions()
+    pos = backend.get_current_antenna_joint_positions()
     assert len(pos) == 2
     return (pos[0], pos[1])
 
@@ -94,26 +94,26 @@ async def get_full_state(
         result["control_mode"] = backend.get_motor_control_mode().value
 
     if with_head_pose:
-        pose = backend.get_present_head_pose()
+        pose = backend.get_current_head_pose()
         result["head_pose"] = as_any_pose(pose, use_pose_matrix)
     if with_target_head_pose:
         target_pose = backend.target_head_pose
         assert target_pose is not None
         result["target_head_pose"] = as_any_pose(target_pose, use_pose_matrix)
     if with_head_joints:
-        result["head_joints"] = backend.get_present_head_joint_positions()
+        result["head_joints"] = backend.get_current_head_joint_positions()
     if with_target_head_joints:
         result["target_head_joints"] = backend.target_head_joint_positions
     if with_body_yaw:
-        result["body_yaw"] = backend.get_present_body_yaw()
+        result["body_yaw"] = backend.get_current_body_yaw()
     if with_target_body_yaw:
         result["target_body_yaw"] = backend.target_body_yaw
     if with_antenna_positions:
-        result["antennas_position"] = backend.get_present_antenna_joint_positions()
+        result["antennas_position"] = backend.get_current_antenna_joint_positions()
     if with_target_antenna_positions:
         result["target_antennas_position"] = backend.target_antenna_joint_positions
     if with_passive_joints:
-        joints = backend.get_present_passive_joint_positions()
+        joints = backend.get_current_passive_joint_positions()
         if joints is not None:
             result["passive_joints"] = list(joints.values())
         else:

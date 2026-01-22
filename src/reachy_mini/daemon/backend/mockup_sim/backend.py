@@ -9,13 +9,12 @@ Apps open the webcam/microphone directly (like with a real robot).
 
 import json
 import time
-from dataclasses import dataclass
 from typing import Annotated
 
 import numpy as np
 import numpy.typing as npt
 
-from ..abstract import Backend, MotorControlMode
+from ..abstract import Backend, BackendStatus, MotorControlMode
 
 
 class MockupSimBackend(Backend):
@@ -125,7 +124,7 @@ class MockupSimBackend(Backend):
                 self.pose_publisher.put(
                     json.dumps(
                         {
-                            "head_pose": self.get_present_head_pose().tolist(),
+                            "head_pose": self.get_current_head_pose().tolist(),
                         }
                     ).encode("utf-8")
                 )
@@ -136,17 +135,17 @@ class MockupSimBackend(Backend):
             elapsed = time.time() - start_t
             time.sleep(max(0, control_period - elapsed))
 
-    def get_status(self) -> "MockupSimBackendStatus":
+    def get_status(self) -> "BackendStatus":
         """Get the status of the backend."""
-        return MockupSimBackendStatus(motor_control_mode=self._motor_control_mode)
+        return BackendStatus(error=None, motor_control_mode=self._motor_control_mode)
 
-    def get_present_head_joint_positions(
+    def get_current_head_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (7,)]:
         """Get the current joint positions of the head."""
         return self._head_joint_positions.copy()  # type: ignore[no-any-return]
 
-    def get_present_antenna_joint_positions(
+    def get_current_antenna_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (2,)]:
         """Get the current joint positions of the antennas."""
@@ -166,11 +165,3 @@ class MockupSimBackend(Backend):
         No-op in mockup-sim mode.
         """
         pass
-
-
-@dataclass
-class MockupSimBackendStatus:
-    """Status of the MockupSim backend."""
-
-    motor_control_mode: MotorControlMode
-    error: str | None = None

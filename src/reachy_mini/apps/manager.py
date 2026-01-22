@@ -12,7 +12,7 @@ import numpy as np
 import psutil
 from pydantic import BaseModel
 
-from reachy_mini.daemon.backend.robot import RobotBackend
+from reachy_mini.daemon.backend.abstract import MotorControlMode
 
 from . import AppInfo, SourceKind
 from .sources import hf_space, local_common_venv
@@ -240,8 +240,7 @@ class AppManager:
 
         # Return robot to zero position after app stops
         if self.daemon is not None and self.daemon.backend is not None:
-            if isinstance(self.daemon.backend, RobotBackend):
-                self.daemon.backend.enable_motors()
+            self.daemon.backend.set_motor_control_mode(MotorControlMode.Enabled)
 
             try:
                 from reachy_mini.reachy_mini import INIT_HEAD_POSE

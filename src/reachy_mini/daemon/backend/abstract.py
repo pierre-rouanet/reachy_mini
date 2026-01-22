@@ -9,26 +9,22 @@ each type of backend.
 """
 
 import asyncio
-import json
 import logging
 import threading
 import time
-import typing
-from abc import abstractmethod
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import zenoh
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
+from typing_extensions import Annotated
 
-if typing.TYPE_CHECKING:
-    from reachy_mini.daemon.backend.mockup_sim.backend import MockupSimBackendStatus
-    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackendStatus
-    from reachy_mini.daemon.backend.robot.backend import RobotBackendStatus
-    from reachy_mini.kinematics import AnyKinematics
+from reachy_mini.kinematics import AnyKinematics
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.goto import GotoMove
 from reachy_mini.motion.move import Move
@@ -36,7 +32,6 @@ from reachy_mini.utils.constants import MODELS_ROOT_PATH, URDF_ROOT_PATH
 from reachy_mini.utils.interpolation import (
     InterpolationTechnique,
     distance_between_poses,
-    time_trajectory,
 )
 
 
@@ -48,7 +43,7 @@ class MotorControlMode(str, Enum):
     GravityCompensation = "gravity_compensation"  # Torque ON and controlled in current to compensate for gravity
 
 
-class Backend:
+class Backend(ABC):
     """Base class for robot backends, simulated or real."""
 
     def __init__(
@@ -198,12 +193,9 @@ class Backend:
             self.close()
             raise e
 
+    @abstractmethod
     def run(self) -> None:
-        """Run the backend.
-
-        This method is a placeholder and should be overridden by subclasses.
-        """
-        raise NotImplementedError("The method run should be overridden by subclasses.")
+        """Run the backend."""
 
     def close(self) -> None:
         """Close the backend and release resources.
@@ -219,62 +211,39 @@ class Backend:
             self.audio.close()
             self.audio = None
 
-    @property
-    def is_move_running(self) -> bool:
-        """Return True if a move is currently executing."""
-        return self._active_move_depth > 0
-
-    def _try_start_move(self) -> bool:
-        """Attempt to acquire the move guard, returning False if another client already owns it."""
-        if not self._play_move_lock.acquire(blocking=False):
-            return False
-        self._active_move_depth += 1
-        return True
-
-    def _end_move(self) -> None:
-        """Release the move guard; paired with every successful _try_start_move()."""
-        if self._active_move_depth > 0:
-            self._active_move_depth -= 1
-        self._play_move_lock.release()
-
+    @abstractmethod
     def get_status(
         self,
-    ) -> "RobotBackendStatus | MujocoBackendStatus | MockupSimBackendStatus":
-        """Return backend statistics.
+    ) -> "BackendStatus":
+        """Return backend statistics."""
 
-        This method is a placeholder and should be overridden by subclasses.
-        """
-        raise NotImplementedError(
-            "The method get_status should be overridden by subclasses."
-        )
+    # # Present/Target joint positions
+    # def set_joint_positions_publisher(self, publisher: zenoh.Publisher) -> None:
+    #     """Set the publisher for joint positions.
 
-    # Present/Target joint positions
-    def set_joint_positions_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for joint positions.
+    #     Args:
+    #         publisher: A publisher object that will be used to publish joint positions.
 
-        Args:
-            publisher: A publisher object that will be used to publish joint positions.
+    #     """
+    #     self.joint_positions_publisher = publisher
 
-        """
-        self.joint_positions_publisher = publisher
+    # def set_pose_publisher(self, publisher: zenoh.Publisher) -> None:
+    #     """Set the publisher for head pose.
 
-    def set_pose_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for head pose.
+    #     Args:
+    #         publisher: A publisher object that will be used to publish head pose.
 
-        Args:
-            publisher: A publisher object that will be used to publish head pose.
+    #     """
+    #     self.pose_publisher = publisher
 
-        """
-        self.pose_publisher = publisher
+    # def set_imu_publisher(self, publisher: zenoh.Publisher) -> None:
+    #     """Set the publisher for IMU data.
 
-    def set_imu_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for IMU data.
+    #     Args:
+    #         publisher: A publisher object that will be used to publish IMU data.
 
-        Args:
-            publisher: A publisher object that will be used to publish IMU data.
-
-        """
-        self.imu_publisher = publisher
+    #     """
+    #     self.imu_publisher = publisher
 
     def update_target_head_joints_from_ik(
         self,
@@ -309,7 +278,7 @@ class Backend:
 
         self.target_head_joint_positions = joints
 
-    def set_target_head_pose(
+    def _set_target_head_pose(
         self,
         pose: Annotated[NDArray[np.float64], (4, 4)],
     ) -> None:
@@ -322,7 +291,7 @@ class Backend:
         self.target_head_pose = pose
         self.ik_required = True
 
-    def set_target_body_yaw(self, body_yaw: float) -> None:
+    def _set_target_body_yaw(self, body_yaw: float) -> None:
         """Set the target body yaw for the robot.
 
         Only used when doing a set_target() with a standalone body_yaw (no head pose).
@@ -333,6 +302,18 @@ class Backend:
         """
         self.target_body_yaw = body_yaw
         self.ik_required = True  # Do we need that here?
+
+    def _set_target_antenna_joint_positions(
+        self,
+        positions: Annotated[NDArray[np.float64], (2,)],
+    ) -> None:
+        """Set the antenna joint positions.
+
+        Args:
+            positions (List[float]): A list of joint positions for the antenna.
+
+        """
+        self.target_antenna_joint_positions = positions
 
     def set_target_head_joint_positions(
         self, positions: Annotated[NDArray[np.float64], (7,)] | None
@@ -355,38 +336,13 @@ class Backend:
     ) -> None:
         """Set the target head pose and/or antenna positions and/or body_yaw."""
         if head is not None:
-            self.set_target_head_pose(head)
+            self._set_target_head_pose(head)
 
         if body_yaw is not None:
-            self.set_target_body_yaw(body_yaw)
+            self._set_target_body_yaw(body_yaw)
 
         if antennas is not None:
-            self.set_target_antenna_joint_positions(antennas)
-
-    def set_target_antenna_joint_positions(
-        self,
-        positions: Annotated[NDArray[np.float64], (2,)],
-    ) -> None:
-        """Set the antenna joint positions.
-
-        Args:
-            positions (List[float]): A list of joint positions for the antenna.
-
-        """
-        self.target_antenna_joint_positions = positions
-
-    def set_target_head_joint_current(
-        self,
-        current: Annotated[NDArray[np.float64], (7,)],
-    ) -> None:
-        """Set the head joint current.
-
-        Args:
-            current (Annotated[NDArray[np.float64], (7,)]): A list of current values for the head motors.
-
-        """
-        self.target_head_joint_current = current
-        self.ik_required = False
+            self._set_target_antenna_joint_positions(antennas)
 
     async def play_move(
         self,
@@ -428,11 +384,11 @@ class Backend:
 
                 head, antennas, body_yaw = move.evaluate(t)
                 if head is not None:
-                    self.set_target_head_pose(head)
+                    self._set_target_head_pose(head)
                 if body_yaw is not None:
-                    self.set_target_body_yaw(body_yaw)
+                    self._set_target_body_yaw(body_yaw)
                 if antennas is not None:
-                    self.set_target_antenna_joint_positions(antennas)
+                    self._set_target_antenna_joint_positions(antennas)
 
                 elapsed = time.time() - t0 - t
                 if elapsed < sleep_period:
@@ -444,6 +400,24 @@ class Backend:
                 # release audio resources after playing the move sound
                 self.audio.stop_playing()
             self._end_move()
+
+    @property
+    def is_move_running(self) -> bool:
+        """Return True if a move is currently executing."""
+        return self._active_move_depth > 0
+
+    def _try_start_move(self) -> bool:
+        """Attempt to acquire the move guard, returning False if another client already owns it."""
+        if not self._play_move_lock.acquire(blocking=False):
+            return False
+        self._active_move_depth += 1
+        return True
+
+    def _end_move(self) -> None:
+        """Release the move guard; paired with every successful _try_start_move()."""
+        if self._active_move_depth > 0:
+            self._active_move_depth -= 1
+        self._play_move_lock.release()
 
     async def goto_target(
         self,
@@ -469,152 +443,81 @@ class Backend:
         """
         return await self.play_move(
             move=GotoMove(
-                start_head_pose=self.get_present_head_pose(),
+                start_head_pose=self.get_current_head_pose(),
                 target_head_pose=head,
-                start_body_yaw=self.get_present_body_yaw(),
+                start_body_yaw=self.get_current_body_yaw(),
                 target_body_yaw=body_yaw,
-                start_antennas=np.array(self.get_present_antenna_joint_positions()),
+                start_antennas=np.array(self.get_current_antenna_joint_positions()),
                 target_antennas=np.array(antennas) if antennas is not None else None,
                 duration=duration,
                 method=method,
             )
         )
 
-    async def goto_joint_positions(
-        self,
-        head_joint_positions: list[float]
-        | None = None,  # [yaw, stewart_platform x 6] length 7
-        antennas_joint_positions: list[float]
-        | None = None,  # [right_angle, left_angle] length 2
-        duration: float = 0.5,  # Duration in seconds for the movement
-        method: InterpolationTechnique = InterpolationTechnique.MIN_JERK,  # can be "linear", "minjerk", "ease" or "cartoon", default is "minjerk"
-    ) -> None:
-        """Asynchronously go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
+    # def set_recording_publisher(self, publisher: zenoh.Publisher) -> None:
+    #     """Set the publisher for recording data.
 
-        Go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
+    #     Args:
+    #         publisher: A publisher object that will be used to publish recorded data.
 
-        Args:
-            head_joint_positions (Optional[List[float]]): List of head joint positions in radians (length 7).
-            antennas_joint_positions (Optional[List[float]]): List of antennas joint positions in radians (length 2).
-            duration (float): Duration of the movement in seconds. Default is 0.5 seconds.
-            method (str): Interpolation method to use ("linear", "minjerk", "ease", "cartoon"). Default is "minjerk".
+    #     """
+    #     self.recording_publisher = publisher
 
-        Raises:
-            ValueError: If neither head_joint_positions nor antennas_joint_positions are provided, or if duration is not positive.
+    # def append_record(self, record: dict[str, Any]) -> None:
+    #     """Append a record to the recorded data.
 
-        """
-        if duration <= 0.0:
-            raise ValueError(
-                "Duration must be positive and non-zero. Use set_target() for immediate position setting."
-            )
+    #     Args:
+    #         record (dict): A dictionary containing the record data to be appended.
 
-        start_head = np.array(self.get_present_head_joint_positions())
-        start_antennas = np.array(self.get_present_antenna_joint_positions())
+    #     """
+    #     if not self.is_recording:
+    #         return
+    #     # Double-check under lock to avoid race with stop_recording
+    #     with self._rec_lock:
+    #         if self.is_recording:
+    #             self.recorded_data.append(record)
 
-        target_head = (
-            np.array(head_joint_positions)
-            if head_joint_positions is not None
-            else start_head
-        )
-        target_antennas = (
-            np.array(antennas_joint_positions)
-            if antennas_joint_positions is not None
-            else start_antennas
-        )
+    # def start_recording(self) -> None:
+    #     """Start recording data."""
+    #     with self._rec_lock:
+    #         self.recorded_data = []
+    #         self.is_recording = True
 
-        t0 = time.time()
-        while time.time() - t0 < duration:
-            t = time.time() - t0
+    # def stop_recording(self) -> None:
+    #     """Stop recording data and publish the recorded data."""
+    #     # Swap buffer under lock so writers cannot touch the published list
+    #     with self._rec_lock:
+    #         self.is_recording = False
+    #         recorded_data, self.recorded_data = self.recorded_data, []
+    #     # Publish outside the lock
+    #     if self.recording_publisher is not None:
+    #         self.recording_publisher.put(json.dumps(recorded_data))
+    #     else:
+    #         self.logger.warning(
+    #             "stop_recording called but recording_publisher is not set; dropping data."
+    #         )
 
-            interp_time = time_trajectory(t / duration, method=method)
-
-            head_joint = start_head + (target_head - start_head) * interp_time
-            antennas_joint = (
-                start_antennas + (target_antennas - start_antennas) * interp_time
-            )
-
-            self.set_target_head_joint_positions(head_joint)
-            self.set_target_antenna_joint_positions(antennas_joint)
-            await asyncio.sleep(0.01)
-
-    def set_recording_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for recording data.
-
-        Args:
-            publisher: A publisher object that will be used to publish recorded data.
-
-        """
-        self.recording_publisher = publisher
-
-    def append_record(self, record: dict[str, Any]) -> None:
-        """Append a record to the recorded data.
-
-        Args:
-            record (dict): A dictionary containing the record data to be appended.
-
-        """
-        if not self.is_recording:
-            return
-        # Double-check under lock to avoid race with stop_recording
-        with self._rec_lock:
-            if self.is_recording:
-                self.recorded_data.append(record)
-
-    def start_recording(self) -> None:
-        """Start recording data."""
-        with self._rec_lock:
-            self.recorded_data = []
-            self.is_recording = True
-
-    def stop_recording(self) -> None:
-        """Stop recording data and publish the recorded data."""
-        # Swap buffer under lock so writers cannot touch the published list
-        with self._rec_lock:
-            self.is_recording = False
-            recorded_data, self.recorded_data = self.recorded_data, []
-        # Publish outside the lock
-        if self.recording_publisher is not None:
-            self.recording_publisher.put(json.dumps(recorded_data))
-        else:
-            self.logger.warning(
-                "stop_recording called but recording_publisher is not set; dropping data."
-            )
-
-    def get_present_head_joint_positions(self) -> Annotated[NDArray[np.float64], (7,)]:
-        """Return the present head joint positions.
-
-        This method is a placeholder and should be overridden by subclasses.
-        """
-        raise NotImplementedError(
-            "The method get_present_head_joint_positions should be overridden by subclasses."
-        )
-
-    def get_present_body_yaw(self) -> float:
+    def get_current_body_yaw(self) -> float:
         """Return the present body yaw."""
-        yaw: float = self.get_present_head_joint_positions()[0]
+        yaw: float = self.get_current_head_joint_positions()[0]
         return yaw
 
-    def get_present_head_pose(self) -> Annotated[NDArray[np.float64], (4, 4)]:
+    def get_current_head_pose(self) -> Annotated[NDArray[np.float64], (4, 4)]:
         """Return the present head pose as a 4x4 matrix."""
         assert self.current_head_pose is not None, (
             "The current head pose is not set. Please call the update_head_kinematics_model method first."
         )
         return self.current_head_pose
 
-    def get_current_head_pose(self) -> Annotated[NDArray[np.float64], (4, 4)]:
-        """Return the present head pose as a 4x4 matrix."""
-        return self.get_present_head_pose()
-
-    def get_present_antenna_joint_positions(
+    @abstractmethod
+    def get_current_antenna_joint_positions(
         self,
     ) -> Annotated[NDArray[np.float64], (2,)]:
-        """Return the present antenna joint positions.
+        """Return the present antenna joint positions."""
 
-        This method is a placeholder and should be overridden by subclasses.
-        """
-        raise NotImplementedError(
-            "The method get_present_antenna_joint_positions should be overridden by subclasses."
-        )
+    @abstractmethod
+    def get_current_head_joint_positions(self) -> Annotated[NDArray[np.float64], (7,)]:
+        """Return the present head joint positions."""
 
     # Kinematics methods
     def update_head_kinematics_model(
@@ -644,7 +547,7 @@ class Backend:
 
         """
         if head_joint_positions is None:
-            head_joint_positions = self.get_present_head_joint_positions()
+            head_joint_positions = self.get_current_head_joint_positions()
 
         # Compute the forward kinematics to get the current head pose
         self.current_head_pose = self.head_kinematics.fk(head_joint_positions)
@@ -660,14 +563,14 @@ class Backend:
         if antennas_joint_positions is not None:
             self.current_antenna_joint_positions = antennas_joint_positions
 
-    def set_automatic_body_yaw(self, body_yaw: bool) -> None:
-        """Set the automatic body yaw.
+    # def set_automatic_body_yaw(self, body_yaw: bool) -> None:
+    #     """Set the automatic body yaw.
 
-        Args:
-            body_yaw (bool): The yaw angle of the body.
+    #     Args:
+    #         body_yaw (bool): The yaw angle of the body.
 
-        """
-        self.head_kinematics.set_automatic_body_yaw(automatic_body_yaw=body_yaw)
+    #     """
+    #     self.head_kinematics.set_automatic_body_yaw(automatic_body_yaw=body_yaw)
 
     def get_urdf(self) -> str:
         """Get the URDF representation of the robot."""
@@ -796,26 +699,26 @@ class Backend:
         """Set the motor control mode."""
         pass
 
-    @abstractmethod
-    def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
-        """Set the motor torque for specific motor names."""
-        pass
+    # @abstractmethod
+    # def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
+    #     """Set the motor torque for specific motor names."""
+    #     pass
 
-    def write_raw_packet(self, packet: bytes) -> bytes:
-        """Write a raw packet to the motor controller and return the response.
+    # def write_raw_packet(self, packet: bytes) -> bytes:
+    #     """Write a raw packet to the motor controller and return the response.
 
-        Args:
-            packet (bytes): The raw packet to send to the motor controller.
+    #     Args:
+    #         packet (bytes): The raw packet to send to the motor controller.
 
-        Returns:
-            bytes: The raw response packet from the motor controller.
+    #     Returns:
+    #         bytes: The raw response packet from the motor controller.
 
-        """
-        raise NotImplementedError(
-            "The method write_raw_packet is only available for the real robot backend."
-        )
+    #     """
+    #     raise NotImplementedError(
+    #         "The method write_raw_packet is only available for the real robot backend."
+    #     )
 
-    def get_present_passive_joint_positions(self) -> Optional[Dict[str, float]]:
+    def get_current_passive_joint_positions(self) -> Optional[Dict[str, float]]:
         """Get the present passive joint positions.
 
         Requires the Placo kinematics engine.
@@ -847,3 +750,11 @@ class Backend:
             "passive_7_y": self.head_kinematics.get_joint("passive_7_y"),  # type: ignore [union-attr]
             "passive_7_z": self.head_kinematics.get_joint("passive_7_z"),  # type: ignore [union-attr]
         }
+
+
+@dataclass
+class BackendStatus:
+    """Class to hold backend status information."""
+
+    error: str | None
+    motor_control_mode: MotorControlMode

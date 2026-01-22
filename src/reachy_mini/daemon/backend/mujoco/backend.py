@@ -8,7 +8,6 @@ It includes methods for running the simulation, getting joint positions, and con
 
 import json
 import time
-from dataclasses import dataclass
 from importlib.resources import files
 from threading import Thread
 from typing import Annotated, Any, Optional
@@ -23,7 +22,7 @@ import numpy.typing as npt
 import reachy_mini
 from reachy_mini.io.video_ws import AsyncWebSocketFrameSender
 
-from ..abstract import Backend, MotorControlMode
+from ..abstract import Backend, BackendStatus, MotorControlMode
 from .utils import (
     get_actuator_names,
     get_joint_addr_from_name,
@@ -246,7 +245,7 @@ class MujocoBackend(Backend):
         # This is important to avoid jumps when starting the robot (beore wake-up)
         self.head_kinematics.ik(self.get_mj_present_head_pose(), no_iterations=20)
         self.head_kinematics.fk(
-            self.get_present_head_joint_positions(), no_iterations=20
+            self.get_current_head_joint_positions(), no_iterations=20
         )
 
         # 3) now enter your normal loop
@@ -256,10 +255,10 @@ class MujocoBackend(Backend):
             if step % self.decimation == 0:
                 # update the current states
                 self.current_head_joint_positions = (
-                    self.get_present_head_joint_positions()
+                    self.get_current_head_joint_positions()
                 )
                 self.current_antenna_joint_positions = (
-                    self.get_present_antenna_joint_positions()
+                    self.get_current_antenna_joint_positions()
                 )
                 # Update the Placo kinematics model to recompute passive joints
                 self.update_head_kinematics_model(
@@ -301,7 +300,7 @@ class MujocoBackend(Backend):
                         self.pose_publisher.put(
                             json.dumps(
                                 {
-                                    "head_pose": self.get_present_head_pose().tolist(),
+                                    "head_pose": self.get_current_head_pose().tolist(),
                                 }
                             ).encode("utf-8")
                         )
@@ -339,16 +338,19 @@ class MujocoBackend(Backend):
         mj_current_head_pose[2, 3] -= 0.177
         return mj_current_head_pose
 
-    def get_status(self) -> "MujocoBackendStatus":
+    def get_status(self) -> "BackendStatus":
         """Get the status of the Mujoco backend.
 
         Returns:
             dict: An empty dictionary as the Mujoco backend does not have a specific status to report.
 
         """
-        return MujocoBackendStatus(motor_control_mode=self.get_motor_control_mode())
+        return BackendStatus(
+            error=None,
+            motor_control_mode=self.get_motor_control_mode(),
+        )
 
-    def get_present_head_joint_positions(
+    def get_current_head_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (7,)]:
         """Get the current joint positions of the head."""
@@ -357,7 +359,7 @@ class MujocoBackend(Backend):
         ].flatten()
         return pos
 
-    def get_present_antenna_joint_positions(
+    def get_current_antenna_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (2,)]:
         """Get the current joint positions of the antennas."""
@@ -377,14 +379,3 @@ class MujocoBackend(Backend):
     def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
         """Set the motor torque state for specific motor names."""
         pass
-
-
-@dataclass
-class MujocoBackendStatus:
-    """Dataclass to represent the status of the Mujoco backend.
-
-    Empty for now, as the Mujoco backend does not have a specific status to report.
-    """
-
-    motor_control_mode: MotorControlMode
-    error: str | None = None

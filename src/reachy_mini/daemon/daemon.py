@@ -15,7 +15,7 @@ from importlib.metadata import PackageNotFoundError, version
 from threading import Event, Thread
 from typing import Any, Optional
 
-from reachy_mini.daemon.backend.abstract import MotorControlMode
+from reachy_mini.daemon.backend.abstract import Backend, BackendStatus, MotorControlMode
 from reachy_mini.daemon.utils import (
     convert_enum_to_dict,
     find_serial_port,
@@ -29,10 +29,6 @@ from reachy_mini.io import (
 )
 from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.tools.reflash_motors import reflash_motors
-
-from .backend.mockup_sim import MockupSimBackend, MockupSimBackendStatus
-from .backend.mujoco import MujocoBackend, MujocoBackendStatus
-from .backend.robot import RobotBackend, RobotBackendStatus
 
 
 class Daemon:
@@ -58,7 +54,7 @@ class Daemon:
         self.wireless_version = wireless_version
         self.desktop_app_daemon = desktop_app_daemon
 
-        self.backend: "RobotBackend | MujocoBackend | MockupSimBackend | None" = None
+        self.backend: "Backend | None" = None
         # Get package version
         try:
             package_version = version("reachy_mini")
@@ -608,14 +604,18 @@ class Daemon:
         websocket_uri: Optional[str],
         hardware_config_filepath: str | None = None,
         reflash_motors_on_start: bool = True,
-    ) -> "RobotBackend | MujocoBackend | MockupSimBackend":
+    ) -> "Backend":
         if mockup_sim:
+            from .backend.mockup_sim import MockupSimBackend
+
             return MockupSimBackend(
                 check_collision=check_collision,
                 kinematics_engine=kinematics_engine,
                 use_audio=use_audio,
             )
         elif sim:
+            from .backend.mujoco import MujocoBackend
+
             return MujocoBackend(
                 scene=scene,
                 check_collision=check_collision,
@@ -625,6 +625,8 @@ class Daemon:
                 websocket_uri=websocket_uri,
             )
         else:
+            from .backend.robot import RobotBackend
+
             if serialport == "auto":
                 ports = find_serial_port(wireless_version=wireless_version)
 
@@ -682,9 +684,7 @@ class DaemonStatus:
     desktop_app_daemon: bool
     simulation_enabled: Optional[bool]
     mockup_sim_enabled: Optional[bool]
-    backend_status: Optional[
-        RobotBackendStatus | MujocoBackendStatus | MockupSimBackendStatus
-    ]
+    backend_status: Optional[BackendStatus]
     error: Optional[str] = None
     wlan_ip: Optional[str] = None
     version: Optional[str] = None

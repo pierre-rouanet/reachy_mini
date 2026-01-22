@@ -11,7 +11,7 @@ import struct
 import time
 from dataclasses import dataclass
 from datetime import timedelta
-from multiprocessing import Event  # It seems to be more accurate than threading.Event
+from threading import Event
 from typing import Annotated, Any
 
 import log_throttling
@@ -22,7 +22,7 @@ from reachy_mini_motor_controller import ReachyMiniPyControlLoop
 
 from reachy_mini.utils.hardware_config.parser import parse_yaml_config
 
-from ..abstract import Backend, MotorControlMode
+from ..abstract import Backend, BackendStatus, MotorControlMode
 
 
 class RobotBackend(Backend):
@@ -96,6 +96,7 @@ class RobotBackend(Backend):
             ready=False,
             last_alive=None,
             control_loop_stats={},
+            error=None,
         )
         self._stats_record_period = 1.0  # seconds
         self._stats: dict[str, Any] = {
@@ -121,7 +122,7 @@ class RobotBackend(Backend):
         # Initialize IMU for wireless version
         if wireless_version:
             try:
-                from bmi088 import BMI088
+                from bmi088 import BMI088  # pyright: ignore[reportMissingImports]
 
                 self.bmi088 = BMI088(i2c_bus=4)
                 self.logger.info("BMI088 IMU initialized successfully")
@@ -153,7 +154,7 @@ class RobotBackend(Backend):
 
         # Compute the forward kinematics to get the initial head pose
         # IMPORTANT for wake_up
-        head_positions, _ = self.get_all_joint_positions()
+        head_positions = self.get_current_head_joint_positions()
         # make sure to converge fully (a lot of iterations)
         self.current_head_pose = self.head_kinematics.fk(
             np.array(head_positions),
@@ -220,7 +221,8 @@ class RobotBackend(Backend):
             and self.pose_publisher is not None
         ):
             try:
-                head_positions, antenna_positions = self.get_all_joint_positions()
+                head_positions = self.get_current_head_joint_positions()
+                antenna_positions = self.get_current_antenna_joint_positions()
 
                 # Update the head kinematics model with the current head positions
                 self.update_head_kinematics_model(
@@ -252,7 +254,7 @@ class RobotBackend(Backend):
                     self.pose_publisher.put(
                         json.dumps(
                             {
-                                "head_pose": self.get_present_head_pose().tolist(),
+                                "head_pose": self.get_current_head_pose().tolist(),
                             }
                         )
                     )
@@ -305,7 +307,7 @@ class RobotBackend(Backend):
                 time.time() - self.last_hardware_error_check_time
                 > self.hardware_error_check_period
             ):
-                hardware_errors = self.read_hardware_errors()
+                hardware_errors = self._read_hardware_errors()
                 if hardware_errors:
                     for motor_name, errors in hardware_errors.items():
                         self.logger.error(
@@ -326,21 +328,21 @@ class RobotBackend(Backend):
         self._status.motor_control_mode = self.motor_control_mode
         return self._status
 
-    def enable_motors(self) -> None:
+    def _enable_motors(self) -> None:
         """Enable the motors by turning the torque on."""
         assert self.c is not None, "Motor controller not initialized or already closed."
 
         self.c.enable_torque()
         self._torque_enabled = True
 
-    def disable_motors(self) -> None:
+    def _disable_motors(self) -> None:
         """Disable the motors by turning the torque off."""
         assert self.c is not None, "Motor controller not initialized or already closed."
 
         self.c.disable_torque()
         self._torque_enabled = False
 
-    def set_head_operation_mode(self, mode: int) -> None:
+    def _set_head_operation_mode(self, mode: int) -> None:
         """Change the operation mode of the head motors.
 
         Args:
@@ -395,7 +397,7 @@ class RobotBackend(Backend):
 
         self._current_head_operation_mode = mode
 
-    def set_antennas_operation_mode(self, mode: int) -> None:
+    def _set_antennas_operation_mode(self, mode: int) -> None:
         """Change the operation mode of the antennas motors.
 
         Args:
@@ -435,24 +437,7 @@ class RobotBackend(Backend):
 
             self._current_antennas_operation_mode = mode
 
-    def get_all_joint_positions(self) -> tuple[list[float], list[float]]:
-        """Get the current joint positions of the robot.
-
-        Returns:
-            tuple: A tuple containing two lists - the first list is for the head joint positions,
-                    and the second list is for the antenna joint positions.
-
-        """
-        assert self.c is not None, "Motor controller not initialized or already closed."
-        positions = self.c.get_last_position()
-
-        yaw = positions.body_yaw
-        antennas = positions.antennas
-        dofs = positions.stewart
-
-        return [yaw] + list(dofs), list(antennas)
-
-    def get_present_head_joint_positions(
+    def get_current_head_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (7,)]:
         """Get the current joint positions of the head.
@@ -461,9 +446,15 @@ class RobotBackend(Backend):
             list: A list of joint positions for the head, including the body rotation.
 
         """
-        return np.array(self.get_all_joint_positions()[0])
+        assert self.c is not None, "Motor controller not initialized or already closed."
+        positions = self.c.get_last_position()
 
-    def get_present_antenna_joint_positions(
+        yaw = positions.body_yaw
+        dofs = positions.stewart
+
+        return np.array([yaw] + list(dofs))
+
+    def get_current_antenna_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (2,)]:
         """Get the current joint positions of the antennas.
@@ -472,7 +463,9 @@ class RobotBackend(Backend):
             list: A list of joint positions for the antennas.
 
         """
-        return np.array(self.get_all_joint_positions()[1])
+        assert self.c is not None, "Motor controller not initialized or already closed."
+        positions = self.c.get_last_position()
+        return np.array(positions.antennas)
 
     def get_imu_data(self) -> dict[str, list[float] | float] | None:
         """Get current IMU data (accelerometer, gyroscope, quaternion, temperature).
@@ -529,14 +522,14 @@ class RobotBackend(Backend):
         # Then it drops to 1.0 for currents above 1.5A
         correction_factor = 4.0
         # Get the current head joint positions
-        head_joints = self.get_present_head_joint_positions()
+        head_joints = self.get_current_head_joint_positions()
         gravity_torque = self.head_kinematics.compute_gravity_torque(  # type: ignore [union-attr]
             np.array(head_joints)
         )
         # Convert the torque from Nm to mA
         current = gravity_torque * from_Nm_to_mA / correction_factor
         # Set the head joint current
-        self.set_target_head_joint_current(current)
+        self._set_target_head_joint_current(current)
 
     def get_motor_control_mode(self) -> MotorControlMode:
         """Get the motor control mode."""
@@ -544,23 +537,19 @@ class RobotBackend(Backend):
 
     def set_motor_control_mode(self, mode: MotorControlMode) -> None:
         """Set the motor control mode."""
-        # Check if the mode is already set
-        if mode == self.motor_control_mode:
-            return
-
         if mode == MotorControlMode.Enabled:
             if self.motor_control_mode == MotorControlMode.GravityCompensation:
                 # First, make sure we switch to position control
-                self.disable_motors()
-                self.set_head_operation_mode(3)
-                self.set_antennas_operation_mode(3)
+                self._disable_motors()
+                self._set_head_operation_mode(3)
+                self._set_antennas_operation_mode(3)
 
             self.gravity_compensation_mode = False
-            self.enable_motors()
+            self._enable_motors()
 
         elif mode == MotorControlMode.Disabled:
             self.gravity_compensation_mode = False
-            self.disable_motors()
+            self._disable_motors()
 
         elif mode == MotorControlMode.GravityCompensation:
             if self.kinematics_engine != "Placo":
@@ -568,32 +557,45 @@ class RobotBackend(Backend):
                     "Gravity compensation mode is only supported with the Placo kinematics engine."
                 )
 
-            self.disable_motors()
-            self.set_head_operation_mode(0)
-            self.set_antennas_operation_mode(0)
+            self._disable_motors()
+            self._set_head_operation_mode(0)
+            self._set_antennas_operation_mode(0)
             self.gravity_compensation_mode = True
-            self.enable_motors()
+            self._enable_motors()
 
         self.motor_control_mode = mode
 
-    def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
-        """Set the torque state for specific motor names.
+    #     def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
+    #         """Set the torque state for specific motor names.
+
+    #         Args:
+    #             ids (list[int]): List of motor IDs to set the torque state for.
+    #             on (bool): True to enable torque, False to disable.
+
+    #         """
+    #         assert self.c is not None, "Motor controller not initialized or already closed."
+
+    #         assert ids is not None and len(ids) > 0, "IDs list cannot be empty or None."
+
+    #         ids_int = [self.name2id[name] for name in ids]
+
+    #         if on:
+    #             self.c.enable_torque_on_ids(ids_int)
+    #         else:
+    #             self.c.disable_torque_on_ids(ids_int)
+
+    def _set_target_head_joint_current(
+        self,
+        current: Annotated[npt.NDArray[np.float64], (7,)],
+    ) -> None:
+        """Set the head joint current.
 
         Args:
-            ids (list[int]): List of motor IDs to set the torque state for.
-            on (bool): True to enable torque, False to disable.
+            current (Annotated[NDArray[np.float64], (7,)]): A list of current values for the head motors.
 
         """
-        assert self.c is not None, "Motor controller not initialized or already closed."
-
-        assert ids is not None and len(ids) > 0, "IDs list cannot be empty or None."
-
-        ids_int = [self.name2id[name] for name in ids]
-
-        if on:
-            self.c.enable_torque_on_ids(ids_int)
-        else:
-            self.c.disable_torque_on_ids(ids_int)
+        self.target_head_joint_current = current
+        self.ik_required = False
 
     def _infer_control_mode(self) -> MotorControlMode:
         assert self.c is not None, "Motor controller not initialized or already closed."
@@ -611,7 +613,7 @@ class RobotBackend(Backend):
         else:
             raise ValueError(f"Unknown motor control mode: {mode}")
 
-    def read_hardware_errors(self) -> dict[str, list[str]]:
+    def _read_hardware_errors(self) -> dict[str, list[str]]:
         """Read hardware errors from the motor controller."""
         if self.c is None:
             return {}
@@ -658,7 +660,7 @@ class RobotBackend(Backend):
 
         return errors
 
-    def write_raw_packet(self, packet: bytes) -> bytes:
+    def _write_raw_packet(self, packet: bytes) -> bytes:
         """Write a raw packet to the motor controller and return the response.
 
         Args:
@@ -675,11 +677,9 @@ class RobotBackend(Backend):
 
 
 @dataclass
-class RobotBackendStatus:
+class RobotBackendStatus(BackendStatus):
     """Status of the Robot Backend."""
 
     ready: bool
-    motor_control_mode: MotorControlMode
     last_alive: float | None
     control_loop_stats: dict[str, Any]
-    error: str | None = None

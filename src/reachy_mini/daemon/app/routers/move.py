@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from huggingface_hub.errors import RepositoryNotFoundError
 from pydantic import BaseModel
 
+from reachy_mini.daemon.backend.robot.backend import RobotBackend
 from reachy_mini.motion.recorded_move import RecordedMoves
 
 from ....daemon.backend.abstract import Backend
@@ -274,12 +275,15 @@ async def write(
 
     Returns an empty bytes if no response is received.
     """
+    if not isinstance(backend, RobotBackend):
+        raise WebSocketDisconnect(code=1008)
+
     await websocket.accept()
 
     try:
         while True:
             data = await websocket.receive_bytes()
-            raw_response_packet: bytes = backend.write_raw_packet(data)
+            raw_response_packet: bytes = backend._write_raw_packet(data)
             await websocket.send_bytes(raw_response_packet)
     except WebSocketDisconnect:
         pass
