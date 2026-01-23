@@ -6,14 +6,12 @@ It includes methods for running the simulation, getting joint positions, and con
 
 """
 
-import json
 import time
 from importlib.resources import files
 from threading import Thread
 from typing import Annotated, Any, Optional
 
 import cv2
-import log_throttling
 import mujoco
 import mujoco.viewer
 import numpy as np
@@ -177,39 +175,38 @@ class MujocoBackend(Backend):
             took = time.time() - start_t
             time.sleep(max(0, self.rendering_timestep - took))
 
-    def run(self) -> None:
-        """Run the Mujoco simulation with a viewer.
+    def _get_control_period(self) -> float:
+        """Return the simulation timestep in seconds."""
+        return float(self.model.opt.timestep)
 
-        This method initializes the viewer and enters the main simulation loop.
-        It updates the joint positions at a rate and publishes the joint positions.
-        """
-        step = 1
+    def _initialize_loop(self) -> None:
+        """Initialize the Mujoco simulation before entering the control loop."""
+        # Start video streaming threads if needed
         if self.websocket_uri:
-            robot_view_streaming_thread = Thread(
+            self._robot_view_streaming_thread = Thread(
                 target=self.streaming_loop,
                 args=(CAMERA_STUDIO_CLOSE, self.websocket_uri),
                 daemon=True,
             )
-            robot_view_streaming_thread.start()
+            self._robot_view_streaming_thread.start()
 
+        # Initialize viewer if not headless
         if not self.headless:
-            viewer = mujoco.viewer.launch_passive(
+            self._viewer = mujoco.viewer.launch_passive(
                 self.model, self.data, show_left_ui=False, show_right_ui=False
             )
-            with viewer.lock():
-                viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-                viewer.cam.distance = 0.8  # ≃ ||pos - lookat||
-                viewer.cam.azimuth = 160  # degrees
-                viewer.cam.elevation = -20  # degrees
-                viewer.cam.lookat[:] = [0, 0, 0.15]
+            with self._viewer.lock():
+                self._viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+                self._viewer.cam.distance = 0.8  # ≃ ||pos - lookat||
+                self._viewer.cam.azimuth = 160  # degrees
+                self._viewer.cam.elevation = -20  # degrees
+                self._viewer.cam.lookat[:] = [0, 0, 0.15]
 
                 # force one render with your new camera
                 mujoco.mj_step(self.model, self.data)
-                viewer.sync()
+                self._viewer.sync()
 
-                # im = self.get_camera()
-                # self.streamer_udp.send_frame(im)
-
+        # Set initial sleep positions
         self.data.qpos[self.joint_qpos_addr] = np.array(
             self._SLEEP_HEAD_JOINT_POSITIONS + self._SLEEP_ANTENNAS_JOINT_POSITIONS
         ).reshape(-1, 1)
@@ -234,93 +231,55 @@ class MujocoBackend(Backend):
         # one more frame so the viewer shows your startup pose
         mujoco.mj_step(self.model, self.data)
         if not self.headless:
-            viewer.sync()
+            self._viewer.sync()
 
-            rendering_thread = Thread(
+            self._rendering_thread = Thread(
                 target=self.rendering_loop, args=(CAMERA_REACHY, 5005), daemon=True
             )
-            rendering_thread.start()
+            self._rendering_thread.start()
 
-        # Update the internal states of the IK and FK to the current configuration
-        # This is important to avoid jumps when starting the robot (beore wake-up)
-        self.head_kinematics.ik(self.get_mj_present_head_pose(), no_iterations=20)
-        self.head_kinematics.fk(
-            self.get_current_head_joint_positions(), no_iterations=20
-        )
+        # Warm up FK and IK solvers with current configuration
+        # This is important to avoid jumps when starting the robot (before wake-up)
+        self._initialize_kinematics_solvers(head_pose=self.get_mj_present_head_pose())
 
-        # 3) now enter your normal loop
-        while not self.should_stop.is_set():
-            start_t = time.time()
+        # Initialize step counter for decimation
+        self._step = 1
 
-            if step % self.decimation == 0:
-                # update the current states
-                self.current_head_joint_positions = (
-                    self.get_current_head_joint_positions()
-                )
-                self.current_antenna_joint_positions = (
-                    self.get_current_antenna_joint_positions()
-                )
-                # Update the Placo kinematics model to recompute passive joints
-                self.update_head_kinematics_model(
-                    self.current_head_joint_positions,
-                    self.current_antenna_joint_positions,
-                )
-                self.current_head_pose = self.get_mj_present_head_pose()
+    def _update(self) -> None:
+        """Execute one iteration of the Mujoco simulation control loop."""
+        # Only update control at the decimated frequency
+        if self._step % self.decimation == 0:
+            # Update current states
+            self.current_head_joint_positions = self.get_current_head_joint_positions()
+            self.current_antenna_joint_positions = (
+                self.get_current_antenna_joint_positions()
+            )
+            self.current_head_pose = self.get_mj_present_head_pose()
 
-                # Update the target head joint positions from IK if necessary
-                # - does nothing if the targets did not change
-                if self.ik_required:
-                    try:
-                        self.update_target_head_joints_from_ik(
-                            self.target_head_pose, self.target_body_yaw
-                        )
-                    except ValueError as e:
-                        log_throttling.by_time(self.logger, interval=0.5).warning(
-                            f"IK error: {e}"
-                        )
+            # Common update logic (kinematics, IK, publishing)
+            self._common_update_logic()
 
-                if self.target_head_joint_positions is not None:
-                    self.data.ctrl[:7] = self.target_head_joint_positions
-                if self.target_antenna_joint_positions is not None:
-                    self.data.ctrl[-2:] = -self.target_antenna_joint_positions
+            # Apply target positions to Mujoco simulation
+            if self.target_head_joint_positions is not None:
+                self.data.ctrl[:7] = self.target_head_joint_positions
+            if self.target_antenna_joint_positions is not None:
+                self.data.ctrl[-2:] = -self.target_antenna_joint_positions
 
-                if (
-                    self.joint_positions_publisher is not None
-                    and self.pose_publisher is not None
-                ):
-                    if not self.is_shutting_down:
-                        self.joint_positions_publisher.put(
-                            json.dumps(
-                                {
-                                    "head_joint_positions": self.current_head_joint_positions.tolist(),
-                                    "antennas_joint_positions": self.current_antenna_joint_positions.tolist(),
-                                }
-                            ).encode("utf-8")
-                        )
-                        self.pose_publisher.put(
-                            json.dumps(
-                                {
-                                    "head_pose": self.get_current_head_pose().tolist(),
-                                }
-                            ).encode("utf-8")
-                        )
-                    self.ready.set()
+            # Sync viewer if not headless
+            if not self.headless:
+                self._viewer.sync()
 
-                if not self.headless:
-                    viewer.sync()
+        # Step the physics simulation
+        mujoco.mj_step(self.model, self.data)
+        self._step += 1
 
-            mujoco.mj_step(self.model, self.data)
-
-            took = time.time() - start_t
-            time.sleep(max(0, self.model.opt.timestep - took))
-            # print(f"Step {step}: took {took*1e6:.1f}us")
-            step += 1
-
+    def _cleanup_loop(self) -> None:
+        """Clean up Mujoco simulation resources after exiting the control loop."""
         if not self.headless:
-            viewer.close()
-            rendering_thread.join()
+            self._viewer.close()
+            self._rendering_thread.join()
         if self.websocket_uri:
-            robot_view_streaming_thread.join()
+            self._robot_view_streaming_thread.join()
 
     def get_mj_present_head_pose(self) -> Annotated[npt.NDArray[np.float64], (4, 4)]:
         """Get the current head pose from the Mujoco simulation.
@@ -342,12 +301,13 @@ class MujocoBackend(Backend):
         """Get the status of the Mujoco backend.
 
         Returns:
-            dict: An empty dictionary as the Mujoco backend does not have a specific status to report.
+            BackendStatus: Backend status including control loop statistics.
 
         """
         return BackendStatus(
             error=None,
             motor_control_mode=self.get_motor_control_mode(),
+            control_loop_stats=self.get_control_loop_stats(),
         )
 
     def get_current_head_joint_positions(

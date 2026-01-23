@@ -7,8 +7,6 @@ The kinematics engine is still used for FK/IK computations.
 Apps open the webcam/microphone directly (like with a real robot).
 """
 
-import json
-import time
 from typing import Annotated
 
 import numpy as np
@@ -64,92 +62,56 @@ class MockupSimBackend(Backend):
         # Control loop frequency
         self.control_frequency = 50.0  # Hz
 
-    def run(self) -> None:
-        """Run the simulation loop.
+    def _get_control_period(self) -> float:
+        """Return the control loop period in seconds."""
+        return 1.0 / self.control_frequency
 
-        In mockup-sim mode, target positions are applied immediately.
-        """
-        control_period = 1.0 / self.control_frequency
-
-        # Initialize kinematics with current positions
+    def _initialize_loop(self) -> None:
+        """Initialize kinematics with current positions."""
         self.update_head_kinematics_model(
             self._head_joint_positions,
             self._antenna_joint_positions,
         )
 
-        while not self.should_stop.is_set():
-            start_t = time.time()
+    def _update(self) -> None:
+        """Execute one iteration of the mockup simulation control loop.
 
-            # Apply target positions immediately (no physics)
-            if self.target_head_joint_positions is not None:
-                self._head_joint_positions = self.target_head_joint_positions.copy()
-            if self.target_antenna_joint_positions is not None:
-                self._antenna_joint_positions = (
-                    self.target_antenna_joint_positions.copy()
-                )
+        In mockup-sim mode, target positions are applied immediately (no physics).
+        """
+        # Apply target positions immediately (no physics)
+        if self.target_head_joint_positions is not None:
+            self._head_joint_positions = self.target_head_joint_positions.copy()
+        if self.target_antenna_joint_positions is not None:
+            self._antenna_joint_positions = self.target_antenna_joint_positions.copy()
 
-            # Update current states
-            self.current_head_joint_positions = self._head_joint_positions.copy()
-            self.current_antenna_joint_positions = self._antenna_joint_positions.copy()
+        # Update current states
+        self.current_head_joint_positions = self._head_joint_positions.copy()
+        self.current_antenna_joint_positions = self._antenna_joint_positions.copy()
 
-            # Update kinematics model (computes FK)
-            self.update_head_kinematics_model(
-                self.current_head_joint_positions,
-                self.current_antenna_joint_positions,
-            )
-
-            # Update target head joint positions from IK if necessary
-            if self.ik_required:
-                try:
-                    self.update_target_head_joints_from_ik(
-                        self.target_head_pose, self.target_body_yaw
-                    )
-                except ValueError:
-                    pass  # IK failed, keep current positions
-
-            # Publish joint positions via Zenoh
-            if (
-                self.joint_positions_publisher is not None
-                and self.pose_publisher is not None
-                and not self.is_shutting_down
-            ):
-                self.joint_positions_publisher.put(
-                    json.dumps(
-                        {
-                            "head_joint_positions": self.current_head_joint_positions.tolist(),
-                            "antennas_joint_positions": self.current_antenna_joint_positions.tolist(),
-                        }
-                    ).encode("utf-8")
-                )
-                self.pose_publisher.put(
-                    json.dumps(
-                        {
-                            "head_pose": self.get_current_head_pose().tolist(),
-                        }
-                    ).encode("utf-8")
-                )
-
-            self.ready.set()
-
-            # Sleep to maintain control frequency
-            elapsed = time.time() - start_t
-            time.sleep(max(0, control_period - elapsed))
+        # Common update logic (kinematics, IK, publishing)
+        self._common_update_logic()
 
     def get_status(self) -> "BackendStatus":
         """Get the status of the backend."""
-        return BackendStatus(error=None, motor_control_mode=self._motor_control_mode)
+        return BackendStatus(
+            error=None,
+            motor_control_mode=self._motor_control_mode,
+            control_loop_stats=self.get_control_loop_stats(),
+        )
 
     def get_current_head_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (7,)]:
         """Get the current joint positions of the head."""
-        return self._head_joint_positions.copy()  # type: ignore[no-any-return]
+        result: npt.NDArray[np.float64] = self._head_joint_positions.copy()
+        return result
 
     def get_current_antenna_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (2,)]:
         """Get the current joint positions of the antennas."""
-        return self._antenna_joint_positions.copy()  # type: ignore[no-any-return]
+        result: npt.NDArray[np.float64] = self._antenna_joint_positions.copy()
+        return result
 
     def get_motor_control_mode(self) -> MotorControlMode:
         """Get the motor control mode."""

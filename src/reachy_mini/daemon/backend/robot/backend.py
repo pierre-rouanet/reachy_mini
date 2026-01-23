@@ -11,10 +11,8 @@ import struct
 import time
 from dataclasses import dataclass
 from datetime import timedelta
-from threading import Event
 from typing import Annotated, Any
 
-import log_throttling
 import numpy as np
 import numpy.typing as npt
 import zenoh
@@ -73,6 +71,7 @@ class RobotBackend(Backend):
             allowed_retries=5,
             stats_pub_period=timedelta(seconds=1.0),
         )
+        assert self.c is not None, "Motor controller initialization failed"
 
         self.name2id = self.c.get_motor_name_id()
         if hardware_config_filepath is not None:
@@ -98,12 +97,6 @@ class RobotBackend(Backend):
             control_loop_stats={},
             error=None,
         )
-        self._stats_record_period = 1.0  # seconds
-        self._stats: dict[str, Any] = {
-            "timestamps": [],
-            "nb_error": 0,
-            "record_period": self._stats_record_period,
-        }
 
         self._current_head_operation_mode = -1  # Default to torque control mode
         self._current_antennas_operation_mode = -1  # Default to torque control mode
@@ -134,55 +127,26 @@ class RobotBackend(Backend):
 
         self.imu_publisher: zenoh.Publisher | None = None
 
-    def run(self) -> None:
-        """Run the control loop for the robot backend.
+    def _get_control_period(self) -> float:
+        """Return the control loop period in seconds."""
+        return 1.0 / self.control_loop_frequency
 
-        This method continuously updates the motor controller at a specified frequency.
-        It reads the joint positions, updates the motor controller, and publishes the joint positions.
-        It also handles errors and retries if the motor controller is not responding.
-        """
+    def _initialize_loop(self) -> None:
+        """Initialize the robot backend before entering the control loop."""
         assert self.c is not None, "Motor controller not initialized or already closed."
 
-        period = 1.0 / self.control_loop_frequency  # Control loop period in seconds
-
-        self.retries = 5
-        self.stats_record_t0 = time.time()
-
+        # Initialize robot-specific tracking
         self.last_hardware_error_check_time = time.time()
 
-        next_call_event = Event()
-
-        # Compute the forward kinematics to get the initial head pose
-        # IMPORTANT for wake_up
-        head_positions = self.get_current_head_joint_positions()
-        # make sure to converge fully (a lot of iterations)
-        self.current_head_pose = self.head_kinematics.fk(
-            np.array(head_positions),
-            no_iterations=20,
-        )
-        assert self.current_head_pose is not None
-
-        self.head_kinematics.ik(self.current_head_pose, no_iterations=20)
-
-        while not self.should_stop.is_set():
-            start_t = time.time()
-            self._stats["timestamps"].append(time.time())
-            self._update()
-            took = time.time() - start_t
-
-            sleep_time = period - took
-            if sleep_time < 0:
-                self.logger.debug(
-                    f"Control loop took too long: {took * 1000:.3f} ms, expected {period * 1000:.3f} ms"
-                )
-                sleep_time = 0.001
-
-            next_call_event.clear()
-            next_call_event.wait(sleep_time)
+        # Warm up FK and IK solvers with current configuration
+        # IMPORTANT for wake_up to avoid jumps
+        self._initialize_kinematics_solvers()
 
     def _update(self) -> None:
+        """Execute one iteration of the robot backend control loop."""
         assert self.c is not None, "Motor controller not initialized or already closed."
 
+        # Apply motor commands (backend-specific logic)
         if self._torque_enabled:
             if self._current_head_operation_mode != 0:  # if position control mode
                 if self.target_head_joint_positions is not None:
@@ -216,60 +180,24 @@ class RobotBackend(Backend):
             #            np.round(self.target_antenna_joint_current, 0).astype(int).tolist()
             #         )
 
+        # Common update logic (kinematics, IK, publishing)
         if (
             self.joint_positions_publisher is not None
             and self.pose_publisher is not None
         ):
             try:
-                head_positions = self.get_current_head_joint_positions()
-                antenna_positions = self.get_current_antenna_joint_positions()
+                self._common_update_logic()
 
-                # Update the head kinematics model with the current head positions
-                self.update_head_kinematics_model(
-                    np.array(head_positions),
-                    np.array(antenna_positions),
-                )
-
-                # Update the target head joint positions from IK if necessary
-                # - does nothing if the targets did not change
-                if self.ik_required:
-                    try:
-                        self.update_target_head_joints_from_ik(
-                            self.target_head_pose, self.target_body_yaw
-                        )
-                    except ValueError as e:
-                        log_throttling.by_time(self.logger, interval=0.5).warning(
-                            f"IK error: {e}"
-                        )
-
-                if not self.is_shutting_down:
-                    self.joint_positions_publisher.put(
-                        json.dumps(
-                            {
-                                "head_joint_positions": head_positions,
-                                "antennas_joint_positions": antenna_positions,
-                            }
-                        )
-                    )
-                    self.pose_publisher.put(
-                        json.dumps(
-                            {
-                                "head_pose": self.get_current_head_pose().tolist(),
-                            }
-                        )
-                    )
-
-                    # Publish IMU data if available
-                    if self.imu_publisher is not None and self.bmi088 is not None:
-                        imu_data = self.get_imu_data()
-                        if imu_data is not None:
-                            self.imu_publisher.put(json.dumps(imu_data))
+                # Robot-specific: Publish IMU data if available
+                if self.imu_publisher is not None and self.bmi088 is not None:
+                    imu_data = self.get_imu_data()
+                    if imu_data is not None:
+                        self.imu_publisher.put(json.dumps(imu_data))
 
                 self.last_alive = time.time()
 
-                self.ready.set()  # Mark the backend as ready
             except RuntimeError as e:
-                self._stats["nb_error"] += 1
+                self._record_error()
 
                 assert self.last_alive is not None
 
@@ -283,37 +211,22 @@ class RobotBackend(Backend):
                     )
                     raise e
 
-            if time.time() - self.stats_record_t0 > self._stats_record_period:
-                dt = np.diff(self._stats["timestamps"])
-                if len(dt) > 1:
-                    self._status.control_loop_stats["mean_control_loop_frequency"] = (
-                        float(np.mean(1.0 / dt))
-                    )
-                    self._status.control_loop_stats["max_control_loop_interval"] = (
-                        float(np.max(dt))
-                    )
-                    self._status.control_loop_stats["nb_error"] = self._stats[
-                        "nb_error"
-                    ]
-                    self._status.control_loop_stats["motor_controller"] = str(
-                        self.c.get_stats()
-                    )
+        # Check for hardware errors periodically
+        if (
+            time.time() - self.last_hardware_error_check_time
+            > self.hardware_error_check_period
+        ):
+            hardware_errors = self._read_hardware_errors()
+            if hardware_errors:
+                for motor_name, errors in hardware_errors.items():
+                    self.logger.error(f"Motor '{motor_name}' hardware errors: {errors}")
+            self.last_hardware_error_check_time = time.time()
 
-                self._stats["timestamps"].clear()
-                self._stats["nb_error"] = 0
-                self.stats_record_t0 = time.time()
-
-            if (
-                time.time() - self.last_hardware_error_check_time
-                > self.hardware_error_check_period
-            ):
-                hardware_errors = self._read_hardware_errors()
-                if hardware_errors:
-                    for motor_name, errors in hardware_errors.items():
-                        self.logger.error(
-                            f"Motor '{motor_name}' hardware errors: {errors}"
-                        )
-                self.last_hardware_error_check_time = time.time()
+    def _get_backend_specific_stats(self) -> dict[str, Any]:
+        """Get robot-specific statistics including motor controller stats."""
+        if self.c is not None:
+            return {"motor_controller": str(self.c.get_stats())}
+        return {}
 
     def close(self) -> None:
         """Close the motor controller connection and release resources."""
@@ -326,6 +239,7 @@ class RobotBackend(Backend):
         """Get the current status of the robot backend."""
         self._status.error = self.error
         self._status.motor_control_mode = self.motor_control_mode
+        self._status.control_loop_stats = self.get_control_loop_stats()
         return self._status
 
     def _enable_motors(self) -> None:
@@ -382,6 +296,7 @@ class RobotBackend(Backend):
             self.target_head_joint_positions = np.array(
                 [motor_pos.body_yaw] + motor_pos.stewart
             )
+            assert self.target_head_joint_positions is not None
 
             self.c.set_stewart_platform_position(
                 self.target_head_joint_positions[1:].tolist()
@@ -428,6 +343,7 @@ class RobotBackend(Backend):
                 self.target_antenna_joint_positions = np.array(
                     self.c.get_last_position().antennas
                 )
+                assert self.target_antenna_joint_positions is not None
                 self.c.set_antennas_positions(
                     self.target_antenna_joint_positions.tolist()
                 )
@@ -505,9 +421,11 @@ class RobotBackend(Backend):
 
     def compensate_head_gravity(self) -> None:
         """Calculate the currents necessary to compensate for gravity."""
-        assert self.kinematics_engine == "Placo", (
-            "Gravity compensation is only supported with the Placo kinematics engine."
-        )
+        from reachy_mini.kinematics.placo_kinematics import PlacoKinematics
+
+        assert self.kinematics_engine == "Placo" and isinstance(
+            self.head_kinematics, PlacoKinematics
+        ), "Gravity compensation is only supported with the Placo kinematics engine."
 
         # Even though in their docs dynamixes says that 1 count is 1 mA, in practice I've found it to be 3mA.
         # I am not sure why this happens
@@ -523,7 +441,7 @@ class RobotBackend(Backend):
         correction_factor = 4.0
         # Get the current head joint positions
         head_joints = self.get_current_head_joint_positions()
-        gravity_torque = self.head_kinematics.compute_gravity_torque(  # type: ignore [union-attr]
+        gravity_torque = self.head_kinematics.compute_gravity_torque(
             np.array(head_joints)
         )
         # Convert the torque from Nm to mA
@@ -565,24 +483,25 @@ class RobotBackend(Backend):
 
         self.motor_control_mode = mode
 
-    #     def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
-    #         """Set the torque state for specific motor names.
+    def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
+        """Set the torque state for specific motor names.
 
-    #         Args:
-    #             ids (list[int]): List of motor IDs to set the torque state for.
-    #             on (bool): True to enable torque, False to disable.
+        Args:
+            ids (list[int]): List of motor IDs to set the torque state for.
+            on (bool): True to enable torque, False to disable.
 
-    #         """
-    #         assert self.c is not None, "Motor controller not initialized or already closed."
+        """
+        # FIXME: not only bool read
+        assert self.c is not None, "Motor controller not initialized or already closed."
 
-    #         assert ids is not None and len(ids) > 0, "IDs list cannot be empty or None."
+        assert ids is not None and len(ids) > 0, "IDs list cannot be empty or None."
 
-    #         ids_int = [self.name2id[name] for name in ids]
+        ids_int = [self.name2id[name] for name in ids]
 
-    #         if on:
-    #             self.c.enable_torque_on_ids(ids_int)
-    #         else:
-    #             self.c.disable_torque_on_ids(ids_int)
+        if on:
+            self.c.enable_torque_on_ids(ids_int)
+        else:
+            self.c.disable_torque_on_ids(ids_int)
 
     def _set_target_head_joint_current(
         self,
@@ -680,6 +599,6 @@ class RobotBackend(Backend):
 class RobotBackendStatus(BackendStatus):
     """Status of the Robot Backend."""
 
-    ready: bool
-    last_alive: float | None
-    control_loop_stats: dict[str, Any]
+    ready: bool = False
+    last_alive: float | None = None
+    control_loop_stats: dict[str, Any] | None = None

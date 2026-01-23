@@ -9,6 +9,7 @@ each type of backend.
 """
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -16,15 +17,19 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import numpy as np
+import zenoh
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 from typing_extensions import Annotated
 
 from reachy_mini.kinematics import AnyKinematics
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
+
+if TYPE_CHECKING:
+    from reachy_mini.kinematics.placo_kinematics import PlacoKinematics
 from reachy_mini.motion.goto import GotoMove
 from reachy_mini.motion.move import Move
 from reachy_mini.utils.constants import MODELS_ROOT_PATH, URDF_ROOT_PATH
@@ -123,10 +128,10 @@ class Backend(ABC):
             Annotated[NDArray[np.float64], (2,)] | None
         ) = None  # [0, 1]
 
-        # self.joint_positions_publisher: zenoh.Publisher | None = None
-        # self.pose_publisher: zenoh.Publisher | None = None
-        # self.recording_publisher: zenoh.Publisher | None = None
-        # self.imu_publisher: zenoh.Publisher | None = None
+        self.joint_positions_publisher: Any | None = None  # zenoh.Publisher | None
+        self.pose_publisher: Any | None = None  # zenoh.Publisher | None
+        self.recording_publisher: zenoh.Publisher | None = None
+        self.imu_publisher: zenoh.Publisher | None = None
         self.error: str | None = None  # To store any error that occurs during execution
         self.is_recording = False  # Flag to indicate if recording is active
         self.recorded_data: list[dict[str, Any]] = []  # List to store recorded data
@@ -182,6 +187,16 @@ class Backend(ABC):
             0  # Tracks nested acquisitions within the owning thread
         )
 
+        # Statistics tracking (shared across all backends)
+        self._stats_record_period = 1.0  # seconds
+        self._stats: dict[str, Any] = {
+            "timestamps": [],
+            "nb_error": 0,
+            "record_period": self._stats_record_period,
+        }
+        self._stats_record_t0: float | None = None
+        self._control_loop_stats: dict[str, Any] = {}
+
     # Life cycle methods
     def wrapped_run(self) -> None:
         """Run the backend in a try-except block to store errors."""
@@ -192,9 +207,232 @@ class Backend(ABC):
             self.close()
             raise e
 
-    @abstractmethod
     def run(self) -> None:
-        """Run the backend."""
+        """Run the backend control loop.
+
+        This method implements the common control loop logic for all backends.
+        Subclasses should implement _initialize_loop(), _update(), and optionally _cleanup_loop().
+        """
+        # Backend-specific initialization
+        self._initialize_loop()
+
+        # Initialize stats tracking
+        self._stats_record_t0 = time.time()
+
+        # Main control loop
+        while not self.should_stop.is_set():
+            start_t = time.time()
+
+            # Track timestamp for statistics
+            self._track_loop_iteration()
+
+            # Backend-specific update
+            self._update()
+
+            # Update statistics periodically
+            self._update_stats()
+
+            # Maintain control frequency
+            elapsed = time.time() - start_t
+            sleep_time = self._get_control_period() - elapsed
+            if sleep_time < 0:
+                self.logger.debug(
+                    f"Control loop took too long: {elapsed * 1000:.3f} ms, expected {self._get_control_period() * 1000:.3f} ms"
+                )
+                sleep_time = 0.001
+
+            time.sleep(sleep_time)
+
+        # Backend-specific cleanup
+        self._cleanup_loop()
+
+    @abstractmethod
+    def _get_control_period(self) -> float:
+        """Return the control loop period in seconds.
+
+        Returns:
+            float: The period between control loop iterations in seconds.
+
+        """
+
+    @abstractmethod
+    def _initialize_loop(self) -> None:
+        """Initialize backend-specific state before entering the control loop.
+
+        This is called once before the main loop starts. Use this to:
+        - Set initial joint positions
+        - Initialize kinematics
+        - Set up any backend-specific state
+        """
+
+    def _initialize_kinematics_solvers(
+        self, head_pose: Annotated[NDArray[np.float64], (4, 4)] | None = None
+    ) -> None:
+        """Warm up the FK and IK solvers with current configuration.
+
+        This helper method initializes the kinematics solvers to the current
+        robot configuration to avoid jumps when starting movements (before wake_up).
+
+        Args:
+            head_pose: Optional 4x4 head pose matrix. If None, will compute FK
+                      from current joint positions to get the pose.
+
+        """
+        if head_pose is None:
+            # Compute FK from current joint positions
+            head_positions = self.get_current_head_joint_positions()
+            head_pose = self.head_kinematics.fk(
+                np.array(head_positions),
+                no_iterations=20,
+            )
+            assert head_pose is not None, "FK failed during kinematics initialization"
+
+        # Warm up IK solver with the current pose
+        self.head_kinematics.ik(head_pose, no_iterations=20)
+
+    @abstractmethod
+    def _update(self) -> None:
+        """Execute one iteration of the backend control loop.
+
+        This method is called at the control frequency and should:
+        - Read current positions from the backend
+        - Update kinematics model
+        - Compute IK if needed
+        - Apply target positions to the backend
+        - Publish data if publishers are set
+        - Set ready flag
+        """
+
+    def _cleanup_loop(self) -> None:
+        """Clean up backend-specific state after exiting the control loop.
+
+        This is called once after the main loop exits. Override if needed.
+        Default implementation does nothing.
+        """
+        pass
+
+    def _track_loop_iteration(self) -> None:
+        """Track a control loop iteration for statistics.
+
+        Called at the start of each control loop iteration.
+        """
+        self._stats["timestamps"].append(time.time())
+
+    def _record_error(self) -> None:
+        """Record an error in the statistics."""
+        self._stats["nb_error"] += 1
+
+    def _update_stats(self) -> None:
+        """Update statistics periodically.
+
+        Computes mean control loop frequency, max interval, and error count.
+        Subclasses can override _get_backend_specific_stats() to add more stats.
+        """
+        assert self._stats_record_t0 is not None
+
+        if time.time() - self._stats_record_t0 > self._stats_record_period:
+            dt = np.diff(self._stats["timestamps"])
+            if len(dt) > 1:
+                self._control_loop_stats["mean_control_loop_frequency"] = float(
+                    np.mean(1.0 / dt)
+                )
+                self._control_loop_stats["max_control_loop_interval"] = float(
+                    np.max(dt)
+                )
+                self._control_loop_stats["nb_error"] = self._stats["nb_error"]
+
+                # Allow backends to add their own stats
+                backend_stats = self._get_backend_specific_stats()
+                if backend_stats:
+                    self._control_loop_stats.update(backend_stats)
+
+            self._stats["timestamps"].clear()
+            self._stats["nb_error"] = 0
+            self._stats_record_t0 = time.time()
+
+    def _get_backend_specific_stats(self) -> dict[str, Any]:
+        """Get backend-specific statistics.
+
+        Override this method to add backend-specific stats to the control loop stats.
+
+        Returns:
+            dict: A dictionary of backend-specific statistics.
+
+        """
+        return {}
+
+    def get_control_loop_stats(self) -> dict[str, Any]:
+        """Get the current control loop statistics.
+
+        Returns:
+            dict: Control loop statistics including frequency, intervals, and errors.
+
+        """
+        return self._control_loop_stats.copy()
+
+    def _common_update_logic(self) -> None:
+        """Execute common update logic shared across all backends.
+
+        This helper method handles:
+        - Updating the kinematics model with current positions
+        - Computing IK if required
+        - Publishing joint positions and pose via Zenoh
+        - Setting the ready flag
+
+        Backends should call this in their _update() method after reading
+        current positions and before applying target positions.
+        """
+        # Get current positions
+        head_positions = self.get_current_head_joint_positions()
+        antenna_positions = self.get_current_antenna_joint_positions()
+
+        # Update the head kinematics model with the current positions
+        self.update_head_kinematics_model(
+            np.array(head_positions),
+            np.array(antenna_positions),
+        )
+
+        # Update the target head joint positions from IK if necessary
+        if self.ik_required:
+            try:
+                self.update_target_head_joints_from_ik(
+                    self.target_head_pose, self.target_body_yaw
+                )
+            except ValueError as e:
+                import log_throttling
+
+                log_throttling.by_time(self.logger, interval=0.5).warning(
+                    f"IK error: {e}"
+                )
+
+        # Publish joint positions and pose via Zenoh if publishers are set
+        if (
+            self.joint_positions_publisher is not None
+            and self.pose_publisher is not None
+            and not self.is_shutting_down
+        ):
+            self.joint_positions_publisher.put(
+                json.dumps(
+                    {
+                        "head_joint_positions": head_positions.tolist()
+                        if isinstance(head_positions, np.ndarray)
+                        else head_positions,
+                        "antennas_joint_positions": antenna_positions.tolist()
+                        if isinstance(antenna_positions, np.ndarray)
+                        else antenna_positions,
+                    }
+                )
+            )
+            self.pose_publisher.put(
+                json.dumps(
+                    {
+                        "head_pose": self.get_current_head_pose().tolist(),
+                    }
+                )
+            )
+
+        # Mark the backend as ready
+        self.ready.set()
 
     def close(self) -> None:
         """Close the backend and release resources.
@@ -217,32 +455,32 @@ class Backend(ABC):
         """Return backend statistics."""
 
     # Present/Target joint positions
-    # def set_joint_positions_publisher(self, publisher: zenoh.Publisher) -> None:
-    #     """Set the publisher for joint positions.
+    def set_joint_positions_publisher(self, publisher: Any) -> None:
+        """Set the publisher for joint positions.
 
-    #     Args:
-    #         publisher: A publisher object that will be used to publish joint positions.
+        Args:
+            publisher: A publisher object that will be used to publish joint positions.
 
-    #     """
-    #     self.joint_positions_publisher = publisher
+        """
+        self.joint_positions_publisher = publisher
 
-    # def set_pose_publisher(self, publisher: zenoh.Publisher) -> None:
-    #     """Set the publisher for head pose.
+    def set_pose_publisher(self, publisher: Any) -> None:
+        """Set the publisher for head pose.
 
-    #     Args:
-    #         publisher: A publisher object that will be used to publish head pose.
+        Args:
+            publisher: A publisher object that will be used to publish head pose.
 
-    #     """
-    #     self.pose_publisher = publisher
+        """
+        self.pose_publisher = publisher
 
-    # def set_imu_publisher(self, publisher: zenoh.Publisher) -> None:
-    #     """Set the publisher for IMU data.
+    def set_imu_publisher(self, publisher: zenoh.Publisher) -> None:
+        """Set the publisher for IMU data.
 
-    #     Args:
-    #         publisher: A publisher object that will be used to publish IMU data.
+        Args:
+            publisher: A publisher object that will be used to publish IMU data.
 
-    #     """
-    #     self.imu_publisher = publisher
+        """
+        self.imu_publisher = publisher
 
     def update_target_head_joints_from_ik(
         self,
@@ -277,7 +515,7 @@ class Backend(ABC):
 
         self.target_head_joint_positions = joints
 
-    def _set_target_head_pose(
+    def set_target_head_pose(
         self,
         pose: Annotated[NDArray[np.float64], (4, 4)],
     ) -> None:
@@ -290,7 +528,7 @@ class Backend(ABC):
         self.target_head_pose = pose
         self.ik_required = True
 
-    def _set_target_body_yaw(self, body_yaw: float) -> None:
+    def set_target_body_yaw(self, body_yaw: float) -> None:
         """Set the target body yaw for the robot.
 
         Only used when doing a set_target() with a standalone body_yaw (no head pose).
@@ -302,7 +540,7 @@ class Backend(ABC):
         self.target_body_yaw = body_yaw
         self.ik_required = True  # Do we need that here?
 
-    def _set_target_antenna_joint_positions(
+    def set_target_antenna_joint_positions(
         self,
         positions: Annotated[NDArray[np.float64], (2,)],
     ) -> None:
@@ -335,13 +573,13 @@ class Backend(ABC):
     ) -> None:
         """Set the target head pose and/or antenna positions and/or body_yaw."""
         if head is not None:
-            self._set_target_head_pose(head)
+            self.set_target_head_pose(head)
 
         if body_yaw is not None:
-            self._set_target_body_yaw(body_yaw)
+            self.set_target_body_yaw(body_yaw)
 
         if antennas is not None:
-            self._set_target_antenna_joint_positions(antennas)
+            self.set_target_antenna_joint_positions(antennas)
 
     async def play_move(
         self,
@@ -383,11 +621,11 @@ class Backend(ABC):
 
                 head, antennas, body_yaw = move.evaluate(t)
                 if head is not None:
-                    self._set_target_head_pose(head)
+                    self.set_target_head_pose(head)
                 if body_yaw is not None:
-                    self._set_target_body_yaw(body_yaw)
+                    self.set_target_body_yaw(body_yaw)
                 if antennas is not None:
-                    self._set_target_antenna_joint_positions(antennas)
+                    self.set_target_antenna_joint_positions(antennas)
 
                 elapsed = time.time() - t0 - t
                 if elapsed < sleep_period:
@@ -453,48 +691,48 @@ class Backend(ABC):
             )
         )
 
-    # def set_recording_publisher(self, publisher: zenoh.Publisher) -> None:
-    #     """Set the publisher for recording data.
+    def set_recording_publisher(self, publisher: zenoh.Publisher) -> None:
+        """Set the publisher for recording data.
 
-    #     Args:
-    #         publisher: A publisher object that will be used to publish recorded data.
+        Args:
+            publisher: A publisher object that will be used to publish recorded data.
 
-    #     """
-    #     self.recording_publisher = publisher
+        """
+        self.recording_publisher = publisher
 
-    # def append_record(self, record: dict[str, Any]) -> None:
-    #     """Append a record to the recorded data.
+    def append_record(self, record: dict[str, Any]) -> None:
+        """Append a record to the recorded data.
 
-    #     Args:
-    #         record (dict): A dictionary containing the record data to be appended.
+        Args:
+            record (dict): A dictionary containing the record data to be appended.
 
-    #     """
-    #     if not self.is_recording:
-    #         return
-    #     # Double-check under lock to avoid race with stop_recording
-    #     with self._rec_lock:
-    #         if self.is_recording:
-    #             self.recorded_data.append(record)
+        """
+        if not self.is_recording:
+            return
+        # Double-check under lock to avoid race with stop_recording
+        with self._rec_lock:
+            if self.is_recording:
+                self.recorded_data.append(record)
 
-    # def start_recording(self) -> None:
-    #     """Start recording data."""
-    #     with self._rec_lock:
-    #         self.recorded_data = []
-    #         self.is_recording = True
+    def start_recording(self) -> None:
+        """Start recording data."""
+        with self._rec_lock:
+            self.recorded_data = []
+            self.is_recording = True
 
-    # def stop_recording(self) -> None:
-    #     """Stop recording data and publish the recorded data."""
-    #     # Swap buffer under lock so writers cannot touch the published list
-    #     with self._rec_lock:
-    #         self.is_recording = False
-    #         recorded_data, self.recorded_data = self.recorded_data, []
-    #     # Publish outside the lock
-    #     if self.recording_publisher is not None:
-    #         self.recording_publisher.put(json.dumps(recorded_data))
-    #     else:
-    #         self.logger.warning(
-    #             "stop_recording called but recording_publisher is not set; dropping data."
-    #         )
+    def stop_recording(self) -> None:
+        """Stop recording data and publish the recorded data."""
+        # Swap buffer under lock so writers cannot touch the published list
+        with self._rec_lock:
+            self.is_recording = False
+            recorded_data, self.recorded_data = self.recorded_data, []
+        # Publish outside the lock
+        if self.recording_publisher is not None:
+            self.recording_publisher.put(json.dumps(recorded_data))
+        else:
+            self.logger.warning(
+                "stop_recording called but recording_publisher is not set; dropping data."
+            )
 
     def get_current_body_yaw(self) -> float:
         """Return the present body yaw."""
@@ -562,14 +800,14 @@ class Backend(ABC):
         if antennas_joint_positions is not None:
             self.current_antenna_joint_positions = antennas_joint_positions
 
-    # def set_automatic_body_yaw(self, body_yaw: bool) -> None:
-    #     """Set the automatic body yaw.
+    def set_automatic_body_yaw(self, body_yaw: bool) -> None:
+        """Set the automatic body yaw.
 
-    #     Args:
-    #         body_yaw (bool): The yaw angle of the body.
+        Args:
+            body_yaw (bool): The yaw angle of the body.
 
-    #     """
-    #     self.head_kinematics.set_automatic_body_yaw(automatic_body_yaw=body_yaw)
+        """
+        self.head_kinematics.set_automatic_body_yaw(automatic_body_yaw=body_yaw)
 
     def get_urdf(self) -> str:
         """Get the URDF representation of the robot."""
@@ -698,56 +936,51 @@ class Backend(ABC):
         """Set the motor control mode."""
         pass
 
-    # @abstractmethod
-    # def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
-    #     """Set the motor torque for specific motor names."""
-    #     pass
+    def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
+        """Set the motor torque for specific motor names.
 
-    # def write_raw_packet(self, packet: bytes) -> bytes:
-    #     """Write a raw packet to the motor controller and return the response.
+        Default implementation does nothing. Override in subclasses that support
+        per-motor torque control.
 
-    #     Args:
-    #         packet (bytes): The raw packet to send to the motor controller.
+        Args:
+            ids: List of motor names to set torque for.
+            on: True to enable torque, False to disable.
 
-    #     Returns:
-    #         bytes: The raw response packet from the motor controller.
-
-    #     """
-    #     raise NotImplementedError(
-    #         "The method write_raw_packet is only available for the real robot backend."
-    #     )
+        """
+        pass
 
     def get_current_passive_joint_positions(self) -> Optional[Dict[str, float]]:
         """Get the present passive joint positions.
 
         Requires the Placo kinematics engine.
         """
-        # This is would be better, and fix mypy issues, but Placo is dynamically imported
-        # if not isinstance(self.head_kinematics, PlacoKinematics):
-        if self.kinematics_engine != "Placo":
+        if self.kinematics_engine != "Placo" or not isinstance(
+            self.head_kinematics, PlacoKinematics
+        ):
             return None
+
         return {
-            "passive_1_x": self.head_kinematics.get_joint("passive_1_x"),  # type: ignore [union-attr]
-            "passive_1_y": self.head_kinematics.get_joint("passive_1_y"),  # type: ignore [union-attr]
-            "passive_1_z": self.head_kinematics.get_joint("passive_1_z"),  # type: ignore [union-attr]
-            "passive_2_x": self.head_kinematics.get_joint("passive_2_x"),  # type: ignore [union-attr]
-            "passive_2_y": self.head_kinematics.get_joint("passive_2_y"),  # type: ignore [union-attr]
-            "passive_2_z": self.head_kinematics.get_joint("passive_2_z"),  # type: ignore [union-attr]
-            "passive_3_x": self.head_kinematics.get_joint("passive_3_x"),  # type: ignore [union-attr]
-            "passive_3_y": self.head_kinematics.get_joint("passive_3_y"),  # type: ignore [union-attr]
-            "passive_3_z": self.head_kinematics.get_joint("passive_3_z"),  # type: ignore [union-attr]
-            "passive_4_x": self.head_kinematics.get_joint("passive_4_x"),  # type: ignore [union-attr]
-            "passive_4_y": self.head_kinematics.get_joint("passive_4_y"),  # type: ignore [union-attr]
-            "passive_4_z": self.head_kinematics.get_joint("passive_4_z"),  # type: ignore [union-attr]
-            "passive_5_x": self.head_kinematics.get_joint("passive_5_x"),  # type: ignore [union-attr]
-            "passive_5_y": self.head_kinematics.get_joint("passive_5_y"),  # type: ignore [union-attr]
-            "passive_5_z": self.head_kinematics.get_joint("passive_5_z"),  # type: ignore [union-attr]
-            "passive_6_x": self.head_kinematics.get_joint("passive_6_x"),  # type: ignore [union-attr]
-            "passive_6_y": self.head_kinematics.get_joint("passive_6_y"),  # type: ignore [union-attr]
-            "passive_6_z": self.head_kinematics.get_joint("passive_6_z"),  # type: ignore [union-attr]
-            "passive_7_x": self.head_kinematics.get_joint("passive_7_x"),  # type: ignore [union-attr]
-            "passive_7_y": self.head_kinematics.get_joint("passive_7_y"),  # type: ignore [union-attr]
-            "passive_7_z": self.head_kinematics.get_joint("passive_7_z"),  # type: ignore [union-attr]
+            "passive_1_x": self.head_kinematics.get_joint("passive_1_x"),
+            "passive_1_y": self.head_kinematics.get_joint("passive_1_y"),
+            "passive_1_z": self.head_kinematics.get_joint("passive_1_z"),
+            "passive_2_x": self.head_kinematics.get_joint("passive_2_x"),
+            "passive_2_y": self.head_kinematics.get_joint("passive_2_y"),
+            "passive_2_z": self.head_kinematics.get_joint("passive_2_z"),
+            "passive_3_x": self.head_kinematics.get_joint("passive_3_x"),
+            "passive_3_y": self.head_kinematics.get_joint("passive_3_y"),
+            "passive_3_z": self.head_kinematics.get_joint("passive_3_z"),
+            "passive_4_x": self.head_kinematics.get_joint("passive_4_x"),
+            "passive_4_y": self.head_kinematics.get_joint("passive_4_y"),
+            "passive_4_z": self.head_kinematics.get_joint("passive_4_z"),
+            "passive_5_x": self.head_kinematics.get_joint("passive_5_x"),
+            "passive_5_y": self.head_kinematics.get_joint("passive_5_y"),
+            "passive_5_z": self.head_kinematics.get_joint("passive_5_z"),
+            "passive_6_x": self.head_kinematics.get_joint("passive_6_x"),
+            "passive_6_y": self.head_kinematics.get_joint("passive_6_y"),
+            "passive_6_z": self.head_kinematics.get_joint("passive_6_z"),
+            "passive_7_x": self.head_kinematics.get_joint("passive_7_x"),
+            "passive_7_y": self.head_kinematics.get_joint("passive_7_y"),
+            "passive_7_z": self.head_kinematics.get_joint("passive_7_z"),
         }
 
 
@@ -757,3 +990,4 @@ class BackendStatus:
 
     error: str | None
     motor_control_mode: MotorControlMode
+    control_loop_stats: dict[str, Any] | None = None

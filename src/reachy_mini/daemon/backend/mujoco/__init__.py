@@ -1,7 +1,5 @@
 """MuJoCo Backend for Reachy Mini Daemon."""
 
-from dataclasses import dataclass
-
 try:
     import mujoco  # noqa: F401
 
