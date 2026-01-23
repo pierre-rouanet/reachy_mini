@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
-import zenoh
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 from typing_extensions import Annotated
@@ -124,10 +123,10 @@ class Backend(ABC):
             Annotated[NDArray[np.float64], (2,)] | None
         ) = None  # [0, 1]
 
-        self.joint_positions_publisher: zenoh.Publisher | None = None
-        self.pose_publisher: zenoh.Publisher | None = None
-        self.recording_publisher: zenoh.Publisher | None = None
-        self.imu_publisher: zenoh.Publisher | None = None
+        # self.joint_positions_publisher: zenoh.Publisher | None = None
+        # self.pose_publisher: zenoh.Publisher | None = None
+        # self.recording_publisher: zenoh.Publisher | None = None
+        # self.imu_publisher: zenoh.Publisher | None = None
         self.error: str | None = None  # To store any error that occurs during execution
         self.is_recording = False  # Flag to indicate if recording is active
         self.recorded_data: list[dict[str, Any]] = []  # List to store recorded data
@@ -217,7 +216,7 @@ class Backend(ABC):
     ) -> "BackendStatus":
         """Return backend statistics."""
 
-    # # Present/Target joint positions
+    # Present/Target joint positions
     # def set_joint_positions_publisher(self, publisher: zenoh.Publisher) -> None:
     #     """Set the publisher for joint positions.
 
