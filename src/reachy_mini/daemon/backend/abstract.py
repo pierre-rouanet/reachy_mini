@@ -9,7 +9,6 @@ each type of backend.
 """
 
 import asyncio
-import json
 import logging
 import threading
 import time
@@ -20,7 +19,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import numpy as np
-import zenoh
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 from typing_extensions import Annotated
@@ -30,6 +28,7 @@ from reachy_mini.media.media_manager import MediaBackend, MediaManager
 
 if TYPE_CHECKING:
     from reachy_mini.kinematics.placo_kinematics import PlacoKinematics
+
 from reachy_mini.motion.goto import GotoMove
 from reachy_mini.motion.move import Move
 from reachy_mini.utils.constants import MODELS_ROOT_PATH, URDF_ROOT_PATH
@@ -128,13 +127,10 @@ class Backend(ABC):
             Annotated[NDArray[np.float64], (2,)] | None
         ) = None  # [0, 1]
 
-        self.joint_positions_publisher: Any | None = None  # zenoh.Publisher | None
-        self.pose_publisher: Any | None = None  # zenoh.Publisher | None
-        self.recording_publisher: zenoh.Publisher | None = None
-        self.imu_publisher: zenoh.Publisher | None = None
         self.error: str | None = None  # To store any error that occurs during execution
         self.is_recording = False  # Flag to indicate if recording is active
         self.recorded_data: list[dict[str, Any]] = []  # List to store recorded data
+        self.latest_recording: list[dict[str, Any]] | None = None  # Last completed recording
 
         # variables to store the last computed head joint positions and pose
         self._last_target_body_yaw: float | None = (
@@ -299,7 +295,6 @@ class Backend(ABC):
         - Update kinematics model
         - Compute IK if needed
         - Apply target positions to the backend
-        - Publish data if publishers are set
         - Set ready flag
         """
 
@@ -376,7 +371,6 @@ class Backend(ABC):
         This helper method handles:
         - Updating the kinematics model with current positions
         - Computing IK if required
-        - Publishing joint positions and pose via Zenoh
         - Setting the ready flag
 
         Backends should call this in their _update() method after reading
@@ -405,32 +399,6 @@ class Backend(ABC):
                     f"IK error: {e}"
                 )
 
-        # Publish joint positions and pose via Zenoh if publishers are set
-        if (
-            self.joint_positions_publisher is not None
-            and self.pose_publisher is not None
-            and not self.is_shutting_down
-        ):
-            self.joint_positions_publisher.put(
-                json.dumps(
-                    {
-                        "head_joint_positions": head_positions.tolist()
-                        if isinstance(head_positions, np.ndarray)
-                        else head_positions,
-                        "antennas_joint_positions": antenna_positions.tolist()
-                        if isinstance(antenna_positions, np.ndarray)
-                        else antenna_positions,
-                    }
-                )
-            )
-            self.pose_publisher.put(
-                json.dumps(
-                    {
-                        "head_pose": self.get_current_head_pose().tolist(),
-                    }
-                )
-            )
-
         # Mark the backend as ready
         self.ready.set()
 
@@ -454,34 +422,7 @@ class Backend(ABC):
     ) -> "BackendStatus":
         """Return backend statistics."""
 
-    # Present/Target joint positions
-    def set_joint_positions_publisher(self, publisher: Any) -> None:
-        """Set the publisher for joint positions.
-
-        Args:
-            publisher: A publisher object that will be used to publish joint positions.
-
-        """
-        self.joint_positions_publisher = publisher
-
-    def set_pose_publisher(self, publisher: Any) -> None:
-        """Set the publisher for head pose.
-
-        Args:
-            publisher: A publisher object that will be used to publish head pose.
-
-        """
-        self.pose_publisher = publisher
-
-    def set_imu_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for IMU data.
-
-        Args:
-            publisher: A publisher object that will be used to publish IMU data.
-
-        """
-        self.imu_publisher = publisher
-
+    # Inverse kinematics
     def update_target_head_joints_from_ik(
         self,
         pose: Annotated[NDArray[np.float64], (4, 4)] | None = None,
@@ -691,15 +632,6 @@ class Backend(ABC):
             )
         )
 
-    def set_recording_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for recording data.
-
-        Args:
-            publisher: A publisher object that will be used to publish recorded data.
-
-        """
-        self.recording_publisher = publisher
-
     def append_record(self, record: dict[str, Any]) -> None:
         """Append a record to the recorded data.
 
@@ -721,18 +653,24 @@ class Backend(ABC):
             self.is_recording = True
 
     def stop_recording(self) -> None:
-        """Stop recording data and publish the recorded data."""
-        # Swap buffer under lock so writers cannot touch the published list
+        """Stop recording data and store it for retrieval."""
+        # Swap buffer under lock so writers cannot touch the stored list
         with self._rec_lock:
             self.is_recording = False
             recorded_data, self.recorded_data = self.recorded_data, []
-        # Publish outside the lock
-        if self.recording_publisher is not None:
-            self.recording_publisher.put(json.dumps(recorded_data))
-        else:
-            self.logger.warning(
-                "stop_recording called but recording_publisher is not set; dropping data."
-            )
+        # Store the recording for retrieval via /ws/full or API
+        self.latest_recording = recorded_data
+        self.logger.info(f"Recording completed: {len(recorded_data)} frames stored.")
+
+    def get_and_clear_latest_recording(self) -> list[dict[str, Any]] | None:
+        """Get the latest recording and clear it.
+
+        Returns:
+            The latest recording data or None if no recording available.
+        """
+        recording = self.latest_recording
+        self.latest_recording = None
+        return recording
 
     def get_current_body_yaw(self) -> float:
         """Return the present body yaw."""

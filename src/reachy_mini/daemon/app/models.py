@@ -155,3 +155,37 @@ class FullState(BaseModel):
     timestamp: datetime | None = None
     passive_joints: list[float] | None = None
     doa: DoAInfo | None = None
+    imu: "IMUData | None" = None
+    recording: "RecordedTrajectory | None" = None
+
+
+class JointPositions(BaseModel):
+    """Joint positions data for head and antennas."""
+
+    head_joint_positions: list[float]
+    antennas_joint_positions: list[float]
+    timestamp: datetime | None = None
+
+
+class HeadPose(BaseModel):
+    """Head pose data."""
+
+    head_pose: list[float]  # 4x4 matrix flattened
+    timestamp: datetime | None = None
+
+
+class RecordedTrajectory(BaseModel):
+    """Recorded trajectory data."""
+
+    data: list[dict]  # List of recorded target records
+    timestamp: datetime | None = None
+
+
+class IMUData(BaseModel):
+    """IMU sensor data."""
+
+    accelerometer: list[float]  # [x, y, z] in m/s^2
+    gyroscope: list[float]  # [x, y, z] in rad/s
+    quaternion: list[float]  # [w, x, y, z]
+    temperature: float  # in Celsius
+    timestamp: datetime | None = None

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from ....daemon.backend.abstract import Backend
 from ..dependencies import get_backend, ws_get_backend
-from ..models import AnyPose, DoAInfo, FullState, as_any_pose
+from ..models import AnyPose, DoAInfo, FullState, IMUData, RecordedTrajectory, as_any_pose
 
 router = APIRouter(prefix="/state")
 
@@ -71,6 +71,35 @@ async def get_doa(
     return DoAInfo(angle=result[0], speech_detected=result[1])
 
 
+@router.get("/present_imu_data")
+async def get_imu_data(
+    backend: Backend = Depends(get_backend),
+) -> IMUData | None:
+    """Get the current IMU sensor data.
+
+    Returns accelerometer, gyroscope, quaternion, and temperature readings.
+    Returns None if the IMU is not available.
+    """
+    from datetime import datetime, timezone
+
+    from reachy_mini.daemon.backend.robot.backend import RobotBackend
+
+    if not isinstance(backend, RobotBackend):
+        return None
+
+    imu_data = backend.get_imu_data()
+    if imu_data is None:
+        return None
+
+    return IMUData(
+        accelerometer=imu_data["accelerometer"],
+        gyroscope=imu_data["gyroscope"],
+        quaternion=imu_data["quaternion"],
+        temperature=imu_data["temperature"],
+        timestamp=datetime.now(timezone.utc),
+    )
+
+
 @router.get("/full")
 async def get_full_state(
     with_control_mode: bool = True,
@@ -84,6 +113,8 @@ async def get_full_state(
     with_target_antenna_positions: bool = False,
     with_passive_joints: bool = False,
     with_doa: bool = False,
+    with_imu: bool = False,
+    consume_recording: bool = False,
     use_pose_matrix: bool = False,
     backend: Backend = Depends(get_backend),
 ) -> FullState:
@@ -122,6 +153,26 @@ async def get_full_state(
         doa_result = backend.audio.get_DoA()
         if doa_result:
             result["doa"] = DoAInfo(angle=doa_result[0], speech_detected=doa_result[1])
+    if with_imu:
+        from reachy_mini.daemon.backend.robot.backend import RobotBackend
+
+        if isinstance(backend, RobotBackend):
+            imu_data = backend.get_imu_data()
+            if imu_data:
+                result["imu"] = IMUData(
+                    accelerometer=imu_data["accelerometer"],
+                    gyroscope=imu_data["gyroscope"],
+                    quaternion=imu_data["quaternion"],
+                    temperature=imu_data["temperature"],
+                    timestamp=datetime.now(timezone.utc),
+                )
+    if consume_recording:
+        recording_data = backend.get_and_clear_latest_recording()
+        if recording_data:
+            result["recording"] = RecordedTrajectory(
+                data=recording_data,
+                timestamp=datetime.now(timezone.utc),
+            )
 
     result["timestamp"] = datetime.now(timezone.utc)
     return FullState.model_validate(result)
@@ -141,6 +192,8 @@ async def ws_full_state(
     with_target_antenna_positions: bool = False,
     with_passive_joints: bool = False,
     with_doa: bool = False,
+    with_imu: bool = False,
+    consume_recording: bool = True,
     use_pose_matrix: bool = False,
     backend: Backend = Depends(ws_get_backend),
 ) -> None:
@@ -161,6 +214,8 @@ async def ws_full_state(
                 with_target_antenna_positions=with_target_antenna_positions,
                 with_passive_joints=with_passive_joints,
                 with_doa=with_doa,
+                with_imu=with_imu,
+                consume_recording=consume_recording,
                 use_pose_matrix=use_pose_matrix,
                 backend=backend,
             )
@@ -168,3 +223,5 @@ async def ws_full_state(
             await asyncio.sleep(period)
     except WebSocketDisconnect:
         pass
+
+

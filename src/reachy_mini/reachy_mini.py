@@ -16,13 +16,14 @@ from typing import Dict, List, Literal, Optional, Union, cast
 import cv2
 import numpy as np
 import numpy.typing as npt
-import zenoh
 from asgiref.sync import async_to_sync
 from scipy.spatial.transform import Rotation as R
 
+from reachy_mini.daemon.app.models import IMUData
 from reachy_mini.daemon.utils import daemon_check, is_local_camera_available
+from reachy_mini.io.abstract import AbstractClient
 from reachy_mini.io.protocol import GotoTaskRequest
-from reachy_mini.io.zenoh_client import ZenohClient
+from reachy_mini.io.websocket_client import WebSocketClient
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.move import Move
 from reachy_mini.utils.interpolation import InterpolationTechnique, minimum_jerk
@@ -151,11 +152,11 @@ class ReachyMini:
         return self.media_manager
 
     @property
-    def imu(self) -> Dict[str, List[float] | float] | None:
+    def imu(self) -> IMUData | None:
         """Get the current IMU data from the backend.
 
         Returns:
-            dict with the following keys, or None if IMU is not available (Lite version)
+            IMUData or None if IMU is not available (Lite version)
             or no data received yet:
             - 'accelerometer': [x, y, z] in m/s^2
             - 'gyroscope': [x, y, z] in rad/s
@@ -163,7 +164,7 @@ class ReachyMini:
             - 'temperature': float in °C
 
         Note:
-            - Data is cached from the last Zenoh update at 50Hz
+            - Data is cached from the WebSocket stream at 50Hz (configurable via /ws/full)
             - Quaternion is in [w, x, y, z] format
 
         Example:
@@ -283,7 +284,7 @@ class ReachyMini:
 
     def _initialize_client(
         self, requested_mode: ConnectionMode, timeout: float
-    ) -> tuple[ZenohClient, ConnectionMode]:
+    ) -> tuple[AbstractClient, ConnectionMode]:
         """Create a client according to the requested mode, adding auto fallback."""
         requested_mode = cast(ConnectionMode, requested_mode.lower())
         if requested_mode == "auto":
@@ -298,7 +299,7 @@ class ReachyMini:
                 )
                 try:
                     client = self._connect_single(localhost_only=False, timeout=timeout)
-                except (zenoh.ZError, TimeoutError):
+                except (TimeoutError, ConnectionError):
                     raise ConnectionError(
                         "Auto connection: both localhost and network attempts failed. "
                         "Make sure a Reachy Mini daemon is running and accessible."
@@ -311,28 +312,38 @@ class ReachyMini:
         if requested_mode == "localhost_only":
             try:
                 client = self._connect_single(localhost_only=True, timeout=timeout)
-            except (zenoh.ZError, TimeoutError):
+            except (TimeoutError, ConnectionError) as e:
                 raise ConnectionError(
-                    "Could not connect to daemon on localhost. Is the Reachy Mini daemon running?"
+                    f"Could not connect to daemon on localhost. Is the Reachy Mini daemon running? Error: {e}"
                 )
             selected = "localhost_only"
         else:
             try:
                 client = self._connect_single(localhost_only=False, timeout=timeout)
-            except (zenoh.ZError, TimeoutError):
+            except (TimeoutError, ConnectionError) as e:
                 raise ConnectionError(
-                    "Network connection attempt failed. "
-                    "Make sure a Reachy Mini daemon is running and accessible."
+                    f"Network connection attempt failed. "
+                    f"Make sure a Reachy Mini daemon is running and accessible. Error: {e}"
                 )
             selected = "network"
 
         self.logger.info("Connection mode selected: %s", selected)
         return client, selected
 
-    def _connect_single(self, localhost_only: bool, timeout: float) -> ZenohClient:
-        """Connect once with the requested tunneling mode and guard cleanup."""
-        client = ZenohClient(self.robot_name, localhost_only)
+    def _connect_single(self, localhost_only: bool, timeout: float) -> AbstractClient:
+        """Connect once with the requested tunneling mode and guard cleanup.
+
+        Uses WebSocketClient to connect to the daemon.
+        """
+        # Determine host based on localhost_only setting
+        host = "localhost" if localhost_only else "reachy-mini.local"
+        port = 8000  # Default FastAPI port
+
+        client: AbstractClient = WebSocketClient(
+            host=host, port=port, robot_name=self.robot_name
+        )
         client.wait_for_connection(timeout=timeout)
+        self.logger.info("Connected via WebSocket")
         return client
 
     def set_target(

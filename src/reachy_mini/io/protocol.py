@@ -21,6 +21,7 @@ class GotoTaskRequest(BaseModel):
 class PlayMoveTaskRequest(BaseModel):
     """Class to represent a play move task."""
 
+    dataset_name: str
     move_name: str
 
 

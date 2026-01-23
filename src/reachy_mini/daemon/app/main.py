@@ -536,7 +536,7 @@ def main() -> None:
         dest="dataset_update_interval_hours",
         help="Interval in hours for background dataset update checks (default: 24.0, 0 to disable).",
     )
-    # Zenoh server options
+    # Server connectivity options
     parser.add_argument(
         "--localhost-only",
         action="store_true",

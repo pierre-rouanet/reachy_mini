@@ -5,7 +5,6 @@ It handles the control loop, joint positions, torque enabling/disabling, and pro
 It uses the `ReachyMiniMotorController` to communicate with the robot's motors.
 """
 
-import json
 import logging
 import struct
 import time
@@ -15,7 +14,6 @@ from typing import Annotated, Any
 
 import numpy as np
 import numpy.typing as npt
-import zenoh
 from reachy_mini_motor_controller import ReachyMiniPyControlLoop
 
 from reachy_mini.utils.hardware_config.parser import parse_yaml_config
@@ -125,8 +123,6 @@ class RobotBackend(Backend):
         else:
             self.bmi088 = None
 
-        self.imu_publisher: zenoh.Publisher | None = None
-
     def _get_control_period(self) -> float:
         """Return the control loop period in seconds."""
         return 1.0 / self.control_loop_frequency
@@ -180,23 +176,12 @@ class RobotBackend(Backend):
             #            np.round(self.target_antenna_joint_current, 0).astype(int).tolist()
             #         )
 
-        # Common update logic (kinematics, IK, publishing)
-        if (
-            self.joint_positions_publisher is not None
-            and self.pose_publisher is not None
-        ):
-            try:
-                self._common_update_logic()
+        # Common update logic (kinematics, IK)
+        try:
+            self._common_update_logic()
+            self.last_alive = time.time()
 
-                # Robot-specific: Publish IMU data if available
-                if self.imu_publisher is not None and self.bmi088 is not None:
-                    imu_data = self.get_imu_data()
-                    if imu_data is not None:
-                        self.imu_publisher.put(json.dumps(imu_data))
-
-                self.last_alive = time.time()
-
-            except RuntimeError as e:
+        except RuntimeError as e:
                 self._record_error()
 
                 assert self.last_alive is not None

@@ -5,10 +5,12 @@ This exposes:
 - play (wake_up, goto_sleep)
 - stop running moves
 - set_target and streaming set_target
+- task requests via WebSocket
 """
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Coroutine
 from uuid import UUID, uuid4
@@ -19,6 +21,12 @@ from huggingface_hub.errors import RepositoryNotFoundError
 from pydantic import BaseModel
 
 from reachy_mini.daemon.backend.robot.backend import RobotBackend
+from reachy_mini.io.protocol import (
+    GotoTaskRequest,
+    PlayMoveTaskRequest,
+    TaskProgress,
+    TaskRequest,
+)
 from reachy_mini.motion.recorded_move import RecordedMoves
 
 from ....daemon.backend.abstract import Backend
@@ -285,5 +293,84 @@ async def write(
             data = await websocket.receive_bytes()
             raw_response_packet: bytes = backend._write_raw_packet(data)
             await websocket.send_bytes(raw_response_packet)
+    except WebSocketDisconnect:
+        pass
+
+
+@router.websocket("/ws/task")
+async def ws_task(
+    websocket: WebSocket,
+    backend: Backend = Depends(ws_get_backend),
+) -> None:
+    """WebSocket endpoint for task requests (goto, play_move).
+
+    Accepts TaskRequest messages with goto or play_move commands.
+    Sends TaskProgress updates back on the same WebSocket connection.
+    """
+    await websocket.accept()
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            task_req = TaskRequest.model_validate_json(data)
+
+            if isinstance(task_req.req, GotoTaskRequest):
+                req = task_req.req
+
+                async def execute_goto() -> None:
+                    error = None
+                    try:
+                        await backend.goto_target(
+                            head=np.array(req.head).reshape(4, 4)
+                            if req.head
+                            else None,
+                            antennas=np.array(req.antennas) if req.antennas else None,
+                            duration=req.duration,
+                            method=req.method,
+                            body_yaw=req.body_yaw,
+                        )
+                    except Exception as e:
+                        error = str(e)
+
+                    progress = TaskProgress(
+                        uuid=task_req.uuid,
+                        finished=True,
+                        error=error,
+                        timestamp=datetime.now(timezone.utc),
+                    )
+
+                    try:
+                        await websocket.send_text(progress.model_dump_json())
+                    except (RuntimeError, WebSocketDisconnect):
+                        pass
+
+                asyncio.create_task(execute_goto())
+
+            elif isinstance(task_req.req, PlayMoveTaskRequest):
+                play_req = task_req.req
+
+                async def execute_play_move() -> None:
+                    error = None
+                    try:
+                        recorded_moves = RecordedMoves(play_req.dataset_name)
+                        move = recorded_moves.get(play_req.move_name)
+                        await backend.play_move(move)
+                    except Exception as e:
+                        error = str(e)
+
+                    progress = TaskProgress(
+                        uuid=task_req.uuid,
+                        finished=True,
+                        error=error,
+                        timestamp=datetime.now(timezone.utc),
+                    )
+
+                    try:
+                        await websocket.send_text(progress.model_dump_json())
+                    except (RuntimeError, WebSocketDisconnect):
+                        pass
+
+                asyncio.create_task(execute_play_move())
+
     except WebSocketDisconnect:
         pass
