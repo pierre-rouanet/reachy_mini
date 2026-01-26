@@ -755,11 +755,11 @@ class DaemonStatus:
 
 def create_app(args: Args, health_check_event: asyncio.Event | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
-    localhost_only = (
-        args.localhost_only
-        if args.localhost_only is not None
-        else (False if args.wireless_version else True)
-    )
+    # localhost_only = (
+    #     args.localhost_only
+    #     if args.localhost_only is not None
+    #     else (False if args.wireless_version else True)
+    # )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:

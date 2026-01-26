@@ -11,36 +11,14 @@ import argparse
 import asyncio
 import logging
 import types
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any
 
-import uvicorn
-from fastapi import APIRouter, FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-
-from reachy_mini.apps.manager import AppManager
-from reachy_mini.daemon.app.routers import (
-    apps,
-    daemon,
-    hf_auth,
-    kinematics,
-    logs,
-    motors,
-    move,
-    state,
-    volume,
-)
-from reachy_mini.daemon.daemon import Daemon
+from reachy_mini.daemon.daemon import Args, Daemon
 from reachy_mini.media.audio_utils import (
     check_reachymini_asoundrc,
     write_asoundrc_to_home,
 )
-from reachy_mini.motion.recorded_move import preload_default_datasets
 from reachy_mini.utils.wireless_version.startup_check import (
     check_and_fix_restore_venv,
     check_and_fix_venvs_ownership,
@@ -48,220 +26,6 @@ from reachy_mini.utils.wireless_version.startup_check import (
     check_and_update_bluetooth_service,
     check_and_update_wireless_launcher,
 )
-
-
-@dataclass
-class Args:
-    """Arguments for configuring the Reachy Mini daemon."""
-
-    log_level: str = "INFO"
-    log_file: str | None = None
-
-    wireless_version: bool = False
-    desktop_app_daemon: bool = False
-
-    serialport: str = "auto"
-    hardware_config_filepath: str | None = None
-
-    sim: bool = False
-    mockup_sim: bool = False
-    scene: str = "empty"
-    headless: bool = False
-    websocket_uri: str | None = None
-    stream_media: bool = False
-    use_audio: bool = True
-
-    kinematics_engine: str = "AnalyticalKinematics"
-    check_collision: bool = False
-
-    autostart: bool = True
-    timeout_health_check: float | None = None
-
-    wake_up_on_start: bool = True
-    goto_sleep_on_stop: bool = True
-    preload_datasets: bool = False
-    dataset_update_interval_hours: float = 24.0  # 0 to disable periodic updates
-
-    robot_name: str = "reachy_mini"
-
-    fastapi_host: str = "0.0.0.0"
-    fastapi_port: int = 8000
-
-    localhost_only: bool | None = None
-
-
-def create_app(args: Args, health_check_event: asyncio.Event | None = None) -> FastAPI:
-    """Create and configure the FastAPI application."""
-    localhost_only = (
-        args.localhost_only
-        if args.localhost_only is not None
-        else (False if args.wireless_version else True)
-    )
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        """Lifespan context manager for the FastAPI application."""
-        args = app.state.args  # type: Args
-        dataset_updater_task: asyncio.Task[None] | None = None
-
-        def preload_with_logging() -> None:
-            """Download datasets with logging."""
-            try:
-                preload_default_datasets()
-                logging.info("Recorded move datasets pre-loaded successfully")
-            except Exception as e:
-                logging.warning(f"Failed to pre-load some datasets: {e}")
-
-        async def dataset_updater(interval_hours: float) -> None:
-            """Background task that periodically checks for dataset updates."""
-            interval_seconds = interval_hours * 3600
-            while True:
-                try:
-                    await asyncio.sleep(interval_seconds)
-                    logging.info("Checking for dataset updates...")
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, preload_with_logging)
-                except asyncio.CancelledError:
-                    logging.info("Dataset updater task cancelled")
-                    break
-                except Exception as e:
-                    logging.warning(f"Error in dataset updater: {e}")
-
-        # Pre-download recorded move datasets in background to avoid delays on first play
-        # This runs in asyncio's default ThreadPoolExecutor (fire and forget)
-        if args.preload_datasets:
-            loop = asyncio.get_event_loop()
-            loop.run_in_executor(None, preload_with_logging)
-
-        # Start periodic dataset updater if enabled (interval > 0)
-        if args.dataset_update_interval_hours > 0:
-            dataset_updater_task = asyncio.create_task(
-                dataset_updater(args.dataset_update_interval_hours)
-            )
-            logging.info(
-                f"Dataset updater started (interval: {args.dataset_update_interval_hours}h)"
-            )
-
-        try:
-            if args.autostart:
-                await app.state.daemon.start(
-                    serialport=args.serialport,
-                    sim=args.sim,
-                    mockup_sim=args.mockup_sim,
-                    scene=args.scene,
-                    headless=args.headless,
-                    websocket_uri=args.websocket_uri,
-                    stream_media=args.stream_media,
-                    use_audio=args.use_audio,
-                    kinematics_engine=args.kinematics_engine,
-                    check_collision=args.check_collision,
-                    wake_up_on_start=args.wake_up_on_start,
-                    localhost_only=localhost_only,
-                    hardware_config_filepath=args.hardware_config_filepath,
-                )
-
-            yield
-        finally:
-            # Cancel dataset updater task if running
-            if dataset_updater_task and not dataset_updater_task.done():
-                dataset_updater_task.cancel()
-                try:
-                    await dataset_updater_task
-                except asyncio.CancelledError:
-                    pass
-
-            # Ensure cleanup happens even if there's an exception
-            try:
-                logging.info("Shutting down app manager...")
-                await app.state.app_manager.close()
-            except Exception as e:
-                logging.exception(f"Error closing app manager: {e}")
-
-            try:
-                logging.info("Shutting down daemon...")
-                await app.state.daemon.stop(
-                    goto_sleep_on_stop=args.goto_sleep_on_stop,
-                )
-            except Exception as e:
-                logging.exception(f"Error stopping daemon: {e}")
-
-    app = FastAPI(
-        lifespan=lifespan,
-    )
-
-    app.state.args = args
-    app.state.daemon = Daemon(
-        robot_name=args.robot_name,
-        wireless_version=args.wireless_version,
-        desktop_app_daemon=args.desktop_app_daemon,
-    )
-    app.state.app_manager = AppManager(
-        wireless_version=args.wireless_version,
-        desktop_app_daemon=args.desktop_app_daemon,
-        daemon=app.state.daemon,
-    )
-
-    router = APIRouter(prefix="/api")
-    router.include_router(apps.router)
-    router.include_router(daemon.router)
-    router.include_router(hf_auth.router)
-    router.include_router(kinematics.router)
-    router.include_router(motors.router)
-    router.include_router(move.router)
-    router.include_router(state.router)
-    router.include_router(volume.router)
-
-    if args.wireless_version:
-        from .routers import cache, update, wifi_config
-
-        app.include_router(cache.router)
-        app.include_router(logs.router)
-        app.include_router(update.router)
-        app.include_router(wifi_config.router)
-
-    app.include_router(router)
-
-    if health_check_event is not None:
-
-        @app.post("/health-check")
-        async def health_check() -> dict[str, str]:
-            """Health check endpoint to reset the health check timer."""
-            health_check_event.set()
-            return {"status": "ok"}
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # or restrict to your HF domain
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    STATIC_DIR = Path(__file__).parent / "dashboard" / "static"
-    TEMPLATES_DIR = Path(__file__).parent / "dashboard" / "templates"
-
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-    @app.get("/")
-    async def dashboard(request: Request) -> HTMLResponse:
-        """Render the dashboard."""
-        return templates.TemplateResponse(
-            "index.html", {"request": request, "args": args}
-        )
-
-    if args.wireless_version:
-
-        @app.get("/settings")
-        async def settings(request: Request) -> HTMLResponse:
-            """Render the settings page."""
-            return templates.TemplateResponse("settings.html", {"request": request})
-
-        @app.get("/logs")
-        async def logs_page(request: Request) -> HTMLResponse:
-            """Render the logs page."""
-            return templates.TemplateResponse("logs.html", {"request": request})
-
-    return app
 
 
 def run_app(args: Args) -> None:
@@ -325,17 +89,9 @@ def run_app(args: Args) -> None:
         loop.set_exception_handler(asyncio_exception_handler)
 
         health_check_event = asyncio.Event()
-        app = create_app(args, health_check_event)
-
-        config = uvicorn.Config(
-            app,
-            host=args.fastapi_host,
-            port=args.fastapi_port,
-            log_config=None,  # Don't override Python logging configuration
-        )
-        server = uvicorn.Server(config)
-
         health_check_task = None
+
+        daemon = Daemon(args=args)
 
         async def health_check_timeout(timeout_seconds: float) -> None:
             while True:
@@ -347,7 +103,8 @@ def run_app(args: Args) -> None:
                     health_check_event.clear()
                 except asyncio.TimeoutError:
                     logging.warning("Health check timeout reached, stopping app.")
-                    server.should_exit = True
+                    # server.should_exit = True
+                    await daemon.stop()
                     break
                 except asyncio.CancelledError:
                     logging.info("Health check task cancelled.")
@@ -358,7 +115,25 @@ def run_app(args: Args) -> None:
                 health_check_task = asyncio.create_task(
                     health_check_timeout(args.timeout_health_check)
                 )
-            await server.serve()
+            localhost_only = (
+                args.localhost_only
+                if args.localhost_only is not None
+                else (False if args.wireless_version else True)
+            )
+            await daemon.run4ever(
+                serialport=args.serialport,
+                sim=args.sim,
+                mockup_sim=args.mockup_sim,
+                scene=args.scene,
+                headless=args.headless,
+                websocket_uri=args.websocket_uri,
+                stream_media=args.stream_media,
+                use_audio=args.use_audio,
+                kinematics_engine=args.kinematics_engine,
+                check_collision=args.check_collision,
+                wake_up_on_start=args.wake_up_on_start,
+                localhost_only=localhost_only,
+            )
         except KeyboardInterrupt:
             logging.info("Received Ctrl-C, shutting down gracefully.")
         except Exception as e:
