@@ -9,8 +9,8 @@ import threading
 import requests
 from fastapi import APIRouter, HTTPException, WebSocket
 
-from reachy_mini.daemon.app import bg_job_register
-from reachy_mini.daemon.app.bg_job_register import JobInfo
+from reachy_mini.daemon.api import bg_job_register
+from reachy_mini.daemon.api.bg_job_register import JobInfo
 from reachy_mini.utils.wireless_version.update import update_reachy_mini
 from reachy_mini.utils.wireless_version.update_available import (
     get_local_version,

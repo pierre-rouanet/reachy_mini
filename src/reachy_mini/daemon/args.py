@@ -28,7 +28,7 @@ def _default_hardware_config_path() -> str:
     """Get the default hardware config path."""
     return str(
         (
-            Path(__file__).parent.parent.parent
+            Path(__file__).parent.parent
             / "assets"
             / "config"
             / "hardware_config.yaml"

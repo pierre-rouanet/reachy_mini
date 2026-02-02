@@ -10,8 +10,8 @@ from pydantic import BaseModel
 
 from reachy_mini.apps import AppInfo, SourceKind
 from reachy_mini.apps.manager import AppManager, AppStatus
-from reachy_mini.daemon.app import bg_job_register
-from reachy_mini.daemon.app.dependencies import get_app_manager
+from reachy_mini.daemon.api import bg_job_register
+from reachy_mini.daemon.api.dependencies import get_app_manager
 
 router = APIRouter(prefix="/apps")
 

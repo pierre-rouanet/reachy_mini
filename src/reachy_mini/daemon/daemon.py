@@ -17,7 +17,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, Optional
 
 from reachy_mini.apps.manager import AppManager
-from reachy_mini.daemon.app.args import DaemonArgs, KinematicsEngine
+from reachy_mini.daemon.args import DaemonArgs, KinematicsEngine
 from reachy_mini.daemon.backend.abstract import BackendStatus
 from reachy_mini.daemon.backend_manager import BackendManager
 from reachy_mini.daemon.interface_manager import InterfaceManager

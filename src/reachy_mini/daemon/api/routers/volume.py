@@ -15,7 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from reachy_mini.daemon.app.dependencies import get_backend
+from reachy_mini.daemon.api.dependencies import get_backend
 from reachy_mini.daemon.backend.abstract import Backend
 
 router = APIRouter(prefix="/volume")

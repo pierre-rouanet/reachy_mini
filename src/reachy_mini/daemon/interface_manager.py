@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from reachy_mini.daemon.app.args import DaemonArgs
+from reachy_mini.daemon.args import DaemonArgs
 
 if TYPE_CHECKING:
     from reachy_mini.daemon.daemon import Daemon
@@ -98,7 +98,7 @@ class InterfaceManager:
             Configured FastAPI application.
 
         """
-        from reachy_mini.daemon.app.routers import (
+        from reachy_mini.daemon.api.routers import (
             apps,
             hf_auth,
             kinematics,
@@ -108,7 +108,7 @@ class InterfaceManager:
             state,
             volume,
         )
-        from reachy_mini.daemon.app.routers import daemon as daemon_router
+        from reachy_mini.daemon.api.routers import daemon as daemon_router
 
         app = FastAPI()
 
@@ -130,7 +130,7 @@ class InterfaceManager:
 
         # Wireless-only routes
         if self._wireless_version:
-            from reachy_mini.daemon.app.routers import cache, update, wifi_config
+            from reachy_mini.daemon.api.routers import cache, update, wifi_config
 
             app.include_router(cache.router)
             app.include_router(logs.router)
@@ -157,8 +157,8 @@ class InterfaceManager:
         )
 
         # Static files and templates for dashboard
-        static_dir = Path(__file__).parent / "app" / "dashboard" / "static"
-        templates_dir = Path(__file__).parent / "app" / "dashboard" / "templates"
+        static_dir = Path(__file__).parent / "api" / "dashboard" / "static"
+        templates_dir = Path(__file__).parent / "api" / "dashboard" / "templates"
 
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
         templates = Jinja2Templates(directory=str(templates_dir))

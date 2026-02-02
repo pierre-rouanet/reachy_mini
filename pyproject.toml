@@ -95,7 +95,7 @@ opencv = ["opencv-python<=5.0", "cv2_enumerate_cameras>=1.2.1"]
 dev_media = ["reachy_mini[dev,sounddevice,opencv]"]
 
 [project.scripts]
-reachy-mini-daemon = "reachy_mini.daemon.app.main:main"
+reachy-mini-daemon = "reachy_mini.daemon.main:main"
 reachy-mini-app-assistant = "reachy_mini.apps.app:main"
 reachy-mini-reflash-motors = "reachy_mini.tools.reflash_motors:main"
 

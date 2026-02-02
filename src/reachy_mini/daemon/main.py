@@ -14,7 +14,7 @@ import sys
 import types
 from typing import Any
 
-from reachy_mini.daemon.app.args import DaemonArgs, KinematicsEngine, LogLevel
+from reachy_mini.daemon.args import DaemonArgs, KinematicsEngine, LogLevel
 from reachy_mini.daemon.daemon import Daemon
 from reachy_mini.media.audio_utils import (
     check_reachymini_asoundrc,
