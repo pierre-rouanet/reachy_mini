@@ -67,6 +67,21 @@ class Daemon:
         robot_name: str = "reachy_mini",
         wireless_version: bool = False,
         desktop_app_daemon: bool = False,
+        # Context manager start parameters (used by __aenter__)
+        sim: bool = False,
+        mockup_sim: bool = False,
+        serialport: str = "auto",
+        scene: str = "empty",
+        localhost_only: bool = True,
+        wake_up_on_start: bool = True,
+        check_collision: bool = False,
+        kinematics_engine: KinematicsEngine = KinematicsEngine.ANALYTICAL,
+        headless: bool = False,
+        use_audio: bool = True,
+        hardware_config_filepath: str | None = None,
+        fastapi_host: str = "127.0.0.1",
+        fastapi_port: int = 8000,
+        goto_sleep_on_stop: bool = True,
     ) -> None:
         """Initialize the Reachy Mini daemon.
 
@@ -75,8 +90,37 @@ class Daemon:
             robot_name: Name of the robot (for topic namespacing).
             wireless_version: Whether running on wireless Reachy Mini hardware.
             desktop_app_daemon: Whether running as desktop app daemon.
+            sim: If True, run in simulation mode using MuJoCo (for context manager).
+            mockup_sim: If True, run in lightweight simulation mode (for context manager).
+            serialport: Serial port for real motors (for context manager).
+            scene: Name of the scene to load (for context manager).
+            localhost_only: If True, restrict server to localhost only (for context manager).
+            wake_up_on_start: If True, wake up the robot on start (for context manager).
+            check_collision: If True, enable collision checking (for context manager).
+            kinematics_engine: Kinematics engine to use (for context manager).
+            headless: If True, run MuJoCo in headless mode (for context manager).
+            use_audio: If True, enable audio (for context manager).
+            hardware_config_filepath: Path to hardware config YAML (for context manager).
+            fastapi_host: Host address for FastAPI server (for context manager).
+            fastapi_port: Port for FastAPI server (for context manager).
+            goto_sleep_on_stop: If True, put robot to sleep on stop (for context manager).
 
         """
+        # Store context manager parameters
+        self._cm_sim = sim
+        self._cm_mockup_sim = mockup_sim
+        self._cm_serialport = serialport
+        self._cm_scene = scene
+        self._cm_localhost_only = localhost_only
+        self._cm_wake_up_on_start = wake_up_on_start
+        self._cm_check_collision = check_collision
+        self._cm_kinematics_engine = kinematics_engine
+        self._cm_headless = headless
+        self._cm_use_audio = use_audio
+        self._cm_hardware_config_filepath = hardware_config_filepath
+        self._cm_fastapi_host = fastapi_host
+        self._cm_fastapi_port = fastapi_port
+        self._cm_goto_sleep_on_stop = goto_sleep_on_stop
         self.log_level = log_level
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(self.log_level)
@@ -130,6 +174,34 @@ class Daemon:
     def __del__(self) -> None:
         """Destructor to ensure proper cleanup."""
         self.logger.debug("Cleaning up Daemon resources...")
+
+    async def __aenter__(self) -> "Daemon":
+        """Enter context manager: start the daemon."""
+        await self.start(
+            sim=self._cm_sim,
+            mockup_sim=self._cm_mockup_sim,
+            serialport=self._cm_serialport,
+            scene=self._cm_scene,
+            localhost_only=self._cm_localhost_only,
+            wake_up_on_start=self._cm_wake_up_on_start,
+            check_collision=self._cm_check_collision,
+            kinematics_engine=self._cm_kinematics_engine,
+            headless=self._cm_headless,
+            use_audio=self._cm_use_audio,
+            hardware_config_filepath=self._cm_hardware_config_filepath,
+            fastapi_host=self._cm_fastapi_host,
+            fastapi_port=self._cm_fastapi_port,
+        )
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        """Exit context manager: stop the daemon."""
+        await self.stop(goto_sleep_on_stop=self._cm_goto_sleep_on_stop)
 
     @property
     def backend(self) -> Optional["Backend"]:
