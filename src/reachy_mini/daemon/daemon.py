@@ -7,11 +7,10 @@ It also provides a command-line interface for easy interaction.
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from threading import Event, Thread
+from threading import Thread
 from typing import Any, Optional
 
 from reachy_mini.daemon.backend.abstract import Backend, BackendStatus, MotorControlMode
@@ -19,11 +18,6 @@ from reachy_mini.daemon.utils import (
     find_serial_port,
     get_ip_address,
 )
-from reachy_mini.io import (
-    AsyncWebSocketAudioStreamer,
-    AsyncWebSocketFrameSender,
-)
-from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.tools.reflash_motors import reflash_motors
 
 from .backend.mockup_sim import MockupSimBackend
@@ -108,8 +102,6 @@ class Daemon:
         kinematics_engine: str = "AnalyticalKinematics",
         headless: bool = False,
         use_audio: bool = True,
-        websocket_uri: Optional[str] = None,
-        stream_media: bool = False,
         hardware_config_filepath: str | None = None,
     ) -> "DaemonState":
         """Start the Reachy Mini daemon.
@@ -124,9 +116,7 @@ class Daemon:
             check_collision (bool): If True, enable collision checking. Defaults to False.
             kinematics_engine (str): Kinematics engine to use. Defaults to "AnalyticalKinematics".
             headless (bool): If True, run Mujoco in headless mode (no GUI). Defaults to False.
-            websocket_uri (Optional[str]): If set, allow remote control and streaming of the robot through a WebSocket connection to the specified uri. Defaults to None.
             use_audio (bool): If True, enable audio. Defaults to True.
-            stream_media (bool): If True, stream media to the WebSocket. Defaults to False.
             hardware_config_filepath (str | None): Path to the hardware configuration YAML file. Defaults to None.
 
         Returns:
@@ -154,11 +144,9 @@ class Daemon:
             "mockup_sim": mockup_sim,
             "serialport": serialport,
             "headless": headless,
-            "websocket_uri": websocket_uri,
             "use_audio": use_audio,
             "scene": scene,
             "localhost_only": localhost_only,
-            "stream_media": stream_media,
         }
 
         self.logger.info("Starting Reachy Mini daemon...")
@@ -174,7 +162,6 @@ class Daemon:
                 check_collision=check_collision,
                 kinematics_engine=kinematics_engine,
                 headless=headless,
-                websocket_uri=websocket_uri,
                 use_audio=use_audio,
                 hardware_config_filepath=hardware_config_filepath,
             )
@@ -185,33 +172,6 @@ class Daemon:
 
         # TODO: Add interfaces back (ZenohServer, WebSocket, etc.) once io/ abstraction is designed
         # TODO: Add mechanism to publish DaemonStatus updates to interfaces
-
-        self._thread_publish_frames: Optional[Thread] = None
-        self._thread_event_publish_audio: Optional[Event] = None
-        self._thread_publish_audio: Optional[Thread] = None
-        self._thread_event_publish_frames: Optional[Event] = None
-        self.websocket_frame_sender: Optional[AsyncWebSocketFrameSender] = None
-        self.websocket_audio_sender: Optional[AsyncWebSocketAudioStreamer] = None
-        if stream_media:
-            if websocket_uri is None:
-                raise ValueError("WebSocket URI is required when streaming media.")
-            self.media_manager = MediaManager()
-            self.websocket_frame_sender = AsyncWebSocketFrameSender(
-                ws_uri=websocket_uri + "/video_stream"
-            )
-            self._thread_publish_frames = Thread(
-                target=self._publish_frames, daemon=True
-            )
-            self._thread_event_publish_frames = Event()
-            self._thread_publish_frames.start()
-            self.websocket_audio_sender = AsyncWebSocketAudioStreamer(
-                ws_uri=websocket_uri + "/audio_stream"
-            )
-            self._thread_publish_audio = Thread(target=self._publish_audio, daemon=True)
-            self._thread_event_publish_audio = Event()
-            self._thread_publish_audio.start()
-            self.media_manager.start_recording()
-            self.media_manager.start_playing()
 
         def backend_wrapped_run() -> None:
             assert self.backend is not None, (
@@ -224,30 +184,6 @@ class Daemon:
                 self.logger.error(f"Backend encountered an error: {e}")
                 self._status.state = DaemonState.ERROR
                 self._status.error = str(e)
-                if (
-                    self._thread_publish_frames is not None
-                    and self._thread_publish_frames.is_alive()
-                    and self._thread_event_publish_frames is not None
-                ):
-                    self._thread_event_publish_frames.set()
-                    self._thread_publish_frames.join(timeout=2.0)
-                if (
-                    self._thread_publish_audio is not None
-                    and self._thread_publish_audio.is_alive()
-                    and self._thread_event_publish_audio is not None
-                ):
-                    self._thread_event_publish_audio.set()
-                    self._thread_publish_audio.join(timeout=2.0)
-                if (
-                    self.websocket_frame_sender is not None
-                    and self.websocket_frame_sender.connected.is_set()
-                ):
-                    self.websocket_frame_sender.stop_flag = True
-                if (
-                    self.websocket_audio_sender is not None
-                    and self.websocket_audio_sender.connected.is_set()
-                ):
-                    self.websocket_audio_sender.stop_flag = True
                 self.backend = None
 
         self.backend_run_thread = Thread(target=backend_wrapped_run)
@@ -286,38 +222,6 @@ class Daemon:
         self.logger.info("Daemon started successfully.")
         self._status.state = DaemonState.RUNNING
         return self._status.state
-
-    def _publish_frames(self) -> None:
-        """Publish the media to the WebSocket."""
-        if (
-            self._thread_event_publish_frames is None
-            or self.websocket_frame_sender is None
-        ):
-            self.logger.warning("_publish_frames called but not properly initialized.")
-            return
-        while self._thread_event_publish_frames.is_set() is False:
-            frame = self.media_manager.get_frame()
-            if frame is not None:
-                self.websocket_frame_sender.send_frame(frame)
-            time.sleep(0.04)
-
-    def _publish_audio(self) -> None:
-        """Publish the audio to the WebSocket."""
-        if (
-            self._thread_event_publish_audio is None
-            or self.websocket_audio_sender is None
-        ):
-            self.logger.warning("_publish_audio called but not properly initialized.")
-            return
-
-        while self._thread_event_publish_audio.is_set() is False:
-            audio = self.media_manager.get_audio_sample()
-            if audio is not None:
-                self.websocket_audio_sender.send_audio_chunk(audio)
-            received_audio = self.websocket_audio_sender.get_audio_chunk()
-            if received_audio is not None:
-                self.media_manager.push_audio_sample(received_audio)
-            time.sleep(0.05)
 
     async def stop(self, goto_sleep_on_stop: bool = True) -> "DaemonState":
         """Stop the Reachy Mini daemon.
@@ -400,8 +304,6 @@ class Daemon:
         scene: Optional[str] = None,
         headless: Optional[bool] = None,
         use_audio: Optional[bool] = None,
-        websocket_uri: Optional[str] = None,
-        stream_media: Optional[bool] = None,
         localhost_only: Optional[bool] = None,
         wake_up_on_start: Optional[bool] = None,
         goto_sleep_on_stop: Optional[bool] = None,
@@ -415,8 +317,6 @@ class Daemon:
             scene (str): Name of the scene to load in simulation mode ("empty" or "minimal"). Defaults to None (uses the previous value).
             headless (bool): If True, run Mujoco in headless mode (no GUI). Defaults to None (uses the previous value).
             use_audio (bool): If True, enable audio. Defaults to None (uses the previous value).
-            websocket_uri (Optional[str]): If set, allow remote control and streaming of the robot through a WebSocket connection to the specified uri. Defaults to None (uses the previous value).
-            stream_media (bool): If True, stream media to the WebSocket. Defaults to None (uses the previous value).
             localhost_only (bool): If True, restrict the server to localhost only clients. Defaults to None (uses the previous value).
             wake_up_on_start (bool): If True, wake up Reachy Mini on start. Defaults to None (don't wake up).
             goto_sleep_on_stop (bool): If True, put Reachy Mini to sleep on stop. Defaults to None (don't go to sleep).
@@ -452,12 +352,6 @@ class Daemon:
                 "use_audio": use_audio
                 if use_audio is not None
                 else self._start_params["use_audio"],
-                "websocket_uri": websocket_uri
-                if websocket_uri is not None
-                else self._start_params["websocket_uri"],
-                "stream_media": stream_media
-                if stream_media is not None
-                else self._start_params["stream_media"],
                 "localhost_only": localhost_only
                 if localhost_only is not None
                 else self._start_params["localhost_only"],
@@ -502,8 +396,6 @@ class Daemon:
         kinematics_engine: str = "AnalyticalKinematics",
         headless: bool = False,
         use_audio: bool = True,
-        websocket_uri: Optional[str] = None,
-        stream_media: bool = False,
     ) -> None:
         """Run the Reachy Mini daemon indefinitely.
 
@@ -521,8 +413,6 @@ class Daemon:
             kinematics_engine (str): Kinematics engine to use. Defaults to "AnalyticalKinematics".
             headless (bool): If True, run Mujoco in headless mode (no GUI). Defaults to False.
             use_audio (bool): If True, enable audio. Defaults to True.
-            websocket_uri (Optional[str]): If set, allow remote control and streaming of the robot through a WebSocket connection to the specified uri. Defaults to None.
-            stream_media (bool): If True, stream media to the WebSocket. Defaults to False.
 
         """
         await self.start(
@@ -535,9 +425,7 @@ class Daemon:
             check_collision=check_collision,
             kinematics_engine=kinematics_engine,
             headless=headless,
-            websocket_uri=websocket_uri,
             use_audio=use_audio,
-            stream_media=stream_media,
         )
 
         if self._status.state == DaemonState.RUNNING:
@@ -570,7 +458,6 @@ class Daemon:
         kinematics_engine: str,
         headless: bool,
         use_audio: bool,
-        websocket_uri: Optional[str],
         hardware_config_filepath: str | None = None,
         reflash_motors_on_start: bool = True,
     ) -> "RobotBackend | MujocoBackend | MockupSimBackend":
@@ -587,7 +474,6 @@ class Daemon:
                 kinematics_engine=kinematics_engine,
                 headless=headless,
                 use_audio=use_audio,
-                websocket_uri=websocket_uri,
             )
         else:
             if serialport == "auto":
