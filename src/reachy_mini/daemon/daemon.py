@@ -460,7 +460,7 @@ class Daemon:
         use_audio: bool,
         hardware_config_filepath: str | None = None,
         reflash_motors_on_start: bool = True,
-    ) -> "RobotBackend | MujocoBackend | MockupSimBackend":
+    ) -> Backend:
         if mockup_sim:
             return MockupSimBackend(
                 check_collision=check_collision,
