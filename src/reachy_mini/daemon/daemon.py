@@ -6,26 +6,22 @@ It also provides a command-line interface for easy interaction.
 """
 
 import asyncio
-import json
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from threading import Event, Thread
 from typing import Any, Optional
 
-from reachy_mini.daemon.backend.abstract import BackendStatus, MotorControlMode
+from reachy_mini.daemon.backend.abstract import Backend, BackendStatus, MotorControlMode
 from reachy_mini.daemon.utils import (
-    convert_enum_to_dict,
     find_serial_port,
     get_ip_address,
 )
 from reachy_mini.io import (
     AsyncWebSocketAudioStreamer,
-    AsyncWebSocketController,
     AsyncWebSocketFrameSender,
-    ZenohServer,
 )
 from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.tools.reflash_motors import reflash_motors
@@ -58,7 +54,7 @@ class Daemon:
         self.wireless_version = wireless_version
         self.desktop_app_daemon = desktop_app_daemon
 
-        self.backend: "RobotBackend | MujocoBackend | MockupSimBackend | None" = None
+        self.backend: Backend | None = None
         # Get package version
         try:
             package_version = version("reachy_mini")
@@ -79,7 +75,6 @@ class Daemon:
             wlan_ip=None,
             version=package_version,
         )
-        self._thread_event_publish_status = Event()
 
         self._webrtc: Optional[Any] = (
             None  # type GstWebRTC imported for wireless version only
@@ -188,20 +183,8 @@ class Daemon:
             self._status.error = str(e)
             raise e
 
-        self.zenoh_server = ZenohServer(
-            prefix=self.robot_name,
-            backend=self.backend,
-            localhost_only=localhost_only,
-        )
-        self.zenoh_server.start()
-        self._thread_publish_status = Thread(target=self._publish_status, daemon=True)
-        self._thread_publish_status.start()
-
-        self.websocket_server: Optional[AsyncWebSocketController] = None
-        if websocket_uri is not None:
-            self.websocket_server = AsyncWebSocketController(
-                ws_uri=websocket_uri + "/robot", backend=self.backend
-            )
+        # TODO: Add interfaces back (ZenohServer, WebSocket, etc.) once io/ abstraction is designed
+        # TODO: Add mechanism to publish DaemonStatus updates to interfaces
 
         self._thread_publish_frames: Optional[Thread] = None
         self._thread_event_publish_audio: Optional[Event] = None
@@ -241,9 +224,6 @@ class Daemon:
                 self.logger.error(f"Backend encountered an error: {e}")
                 self._status.state = DaemonState.ERROR
                 self._status.error = str(e)
-                self.zenoh_server.stop()
-                if self.websocket_server is not None:
-                    self.websocket_server.stop()
                 if (
                     self._thread_publish_frames is not None
                     and self._thread_publish_frames.is_alive()
@@ -365,10 +345,6 @@ class Daemon:
             self.logger.info("Stopping Reachy Mini daemon...")
             self._status.state = DaemonState.STOPPING
             self.backend.is_shutting_down = True
-            self._thread_event_publish_status.set()
-
-            if self.websocket_server is not None:
-                self.websocket_server.stop()
 
             if self._webrtc:
                 # We use pause() instead of stop() to keep the signalling server running and the producer registered, allowing proper restart.
@@ -396,9 +372,6 @@ class Daemon:
 
             self.backend.close()
             self.backend.ready.clear()
-
-            # zenoh server must be closed after backend finishes to publish all data
-            self.zenoh_server.stop()
 
             if self._status.state != DaemonState.ERROR:
                 self.logger.info("Daemon stopped successfully.")
@@ -515,15 +488,6 @@ class Daemon:
             self._status.backend_status = None
 
         return self._status
-
-    def _publish_status(self) -> None:
-        self._thread_event_publish_status.clear()
-        while self._thread_event_publish_status.is_set() is False:
-            json_str = json.dumps(
-                asdict(self.status(), dict_factory=convert_enum_to_dict)
-            )
-            self.zenoh_server.pub_status.put(json_str)
-            time.sleep(1)
 
     async def run4ever(
         self,
