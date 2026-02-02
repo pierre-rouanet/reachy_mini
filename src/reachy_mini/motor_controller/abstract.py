@@ -1,11 +1,11 @@
-"""Base class for robot backends, simulated or real.
+"""Base class for motor controllers, simulated or real.
 
-This module defines the `Backend` class, which serves as a base for implementing
-different types of robot backends, whether they are simulated (like Mujoco) or real
+This module defines the `MotorController` class, which serves as a base for implementing
+different types of motor controllers, whether they are simulated (like Mujoco) or real
 (connected via serial port). The class provides methods for managing joint positions,
-torque control, and other backend-specific functionalities.
+torque control, and other controller-specific functionalities.
 It is designed to be extended by subclasses that implement the specific behavior for
-each type of backend.
+each type of controller.
 """
 
 import asyncio
@@ -45,8 +45,8 @@ class MotorControlMode(str, Enum):
 
 
 @dataclass
-class BackendStatus:
-    """Base status for all backends."""
+class MotorControllerStatus:
+    """Base status for all motor controllers."""
 
     motor_control_mode: MotorControlMode
     error: str | None = None
@@ -55,8 +55,8 @@ class BackendStatus:
     control_loop_stats: dict[str, Any] = field(default_factory=dict)
 
 
-class Backend(ABC):
-    """Abstract base class for robot backends, simulated or real.
+class MotorController(ABC):
+    """Abstract base class for motor controllers, simulated or real.
 
     This class implements a template method pattern for the control loop.
     Subclasses must implement the abstract methods to provide hardware/sim-specific behavior.
@@ -207,7 +207,7 @@ class Backend(ABC):
         self._last_tick_time = 0.0
 
         # Status object (common for all backends)
-        self._status = BackendStatus(
+        self._status = MotorControllerStatus(
             motor_control_mode=MotorControlMode.Disabled,
             ready=False,
         )
@@ -331,8 +331,8 @@ class Backend(ABC):
         Always sleeps at least 1ms to release the GIL for other threads.
 
         Override for custom timing behavior:
-        - RobotBackend: blocks until Rust signals next cycle
-        - SimBackends: use default (Python timing)
+        - RobotController: blocks until Rust signals next cycle
+        - Simulation controllers: use default (Python timing)
         """
         now = time.time()
         elapsed = now - self._last_tick_time
@@ -368,7 +368,7 @@ class Backend(ABC):
         Note: This base implementation handles common cleanup (audio).
         Subclasses must still implement their own cleanup for backend-specific resources.
         """
-        self.logger.debug("Backend.close() - cleaning up audio resources")
+        self.logger.debug("MotorController.close() - cleaning up resources")
         if self.audio is not None:
             self.audio.close()
             self.audio = None
@@ -391,11 +391,11 @@ class Backend(ABC):
             self._active_move_depth -= 1
         self._play_move_lock.release()
 
-    def get_status(self) -> BackendStatus:
+    def get_status(self) -> MotorControllerStatus:
         """Return backend status.
 
-        Returns the common BackendStatus. Subclasses can override to return
-        a BackendStatus subclass with additional fields if needed.
+        Returns the common MotorControllerStatus. Subclasses can override to return
+        a MotorControllerStatus subclass with additional fields if needed.
         """
         self._status.error = self.error
         self._status.motor_control_mode = self.get_motor_control_mode()

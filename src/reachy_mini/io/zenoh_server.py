@@ -15,7 +15,7 @@ from datetime import datetime
 import numpy as np
 import zenoh
 
-from reachy_mini.daemon.backend.abstract import Backend, MotorControlMode
+from reachy_mini.motor_controller.abstract import MotorControlMode, MotorController
 from reachy_mini.io.abstract import AbstractServer
 from reachy_mini.io.protocol import (
     GotoTaskRequest,
@@ -28,11 +28,11 @@ from reachy_mini.io.protocol import (
 class ZenohServer(AbstractServer):
     """Zenoh server for Reachy Mini."""
 
-    def __init__(self, prefix: str, backend: Backend, localhost_only: bool = True):
+    def __init__(self, prefix: str, motor_controller: MotorController, localhost_only: bool = True):
         """Initialize the Zenoh server."""
         self.prefix = prefix
         self.localhost_only = localhost_only
-        self.backend = backend
+        self.motor_controller = motor_controller
 
         self._lock = threading.Lock()
         self._cmd_event = threading.Event()
@@ -115,14 +115,14 @@ class ZenohServer(AbstractServer):
         command = json.loads(data)
         with self._lock:
             block_targets = (
-                self.backend.is_move_running
+                self.motor_controller.is_move_running
             )  # Prevent concurrent target updates from different clients
 
             def _maybe_ignore(field: str) -> bool:
                 """Return True if the command should be ignored while a move runs."""
                 if not block_targets:
                     return False
-                self.backend.logger.warning(
+                self.motor_controller.logger.warning(
                     f"Ignoring {field} command: a move is currently running."
                 )
                 return True
@@ -131,51 +131,51 @@ class ZenohServer(AbstractServer):
                 if (
                     command["ids"] is not None
                 ):  # If specific motor IDs are provided, just set torque for those motors
-                    self.backend.set_motor_torque_ids(command["ids"], command["torque"])
+                    self.motor_controller.set_motor_torque_ids(command["ids"], command["torque"])
                 else:
                     if command["torque"]:
-                        self.backend.set_motor_control_mode(MotorControlMode.Enabled)
+                        self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
                     else:
-                        self.backend.set_motor_control_mode(MotorControlMode.Disabled)
+                        self.motor_controller.set_motor_control_mode(MotorControlMode.Disabled)
             if "head_joint_positions" in command:
                 if _maybe_ignore("head_joint_positions"):
                     pass
                 else:
-                    self.backend.set_target_head_joint_positions(
+                    self.motor_controller.set_target_head_joint_positions(
                         np.array(command["head_joint_positions"])
                     )
             if "head_pose" in command:
                 if _maybe_ignore("head_pose"):
                     pass
                 else:
-                    self.backend.set_target_head_pose(
+                    self.motor_controller.set_target_head_pose(
                         np.array(command["head_pose"]).reshape(4, 4)
                     )
             if "body_yaw" in command:
                 if _maybe_ignore("body_yaw"):
                     pass
                 else:
-                    self.backend.set_target_body_yaw(command["body_yaw"])
+                    self.motor_controller.set_target_body_yaw(command["body_yaw"])
             if "antennas_joint_positions" in command:
                 if _maybe_ignore("antennas_joint_positions"):
                     pass
                 else:
-                    self.backend.set_target_antenna_joint_positions(
+                    self.motor_controller.set_target_antenna_joint_positions(
                         np.array(command["antennas_joint_positions"]),
                     )
             if "gravity_compensation" in command:
                 try:
                     if command["gravity_compensation"]:
-                        self.backend.set_motor_control_mode(
+                        self.motor_controller.set_motor_control_mode(
                             MotorControlMode.GravityCompensation
                         )
                     else:
-                        self.backend.set_motor_control_mode(MotorControlMode.Enabled)
+                        self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
 
                 except ValueError as e:
                     print(e)
             if "automatic_body_yaw" in command:
-                self.backend.set_automatic_body_yaw(command["automatic_body_yaw"])
+                self.motor_controller.set_automatic_body_yaw(command["automatic_body_yaw"])
         self._cmd_event.set()
 
     def _handle_task_request(self, sample: zenoh.Sample) -> None:
@@ -186,7 +186,7 @@ class ZenohServer(AbstractServer):
 
             def task() -> None:
                 asyncio.run(
-                    self.backend.goto_target(
+                    self.motor_controller.goto_target(
                         head=np.array(req.head).reshape(4, 4) if req.head else None,
                         antennas=np.array(req.antennas) if req.antennas else None,
                         duration=req.duration,

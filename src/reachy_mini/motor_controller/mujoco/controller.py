@@ -1,6 +1,6 @@
-"""Mujoco Backend for Reachy Mini.
+"""MuJoCo Motor Controller for Reachy Mini.
 
-This module provides the MujocoBackend class for simulating the Reachy Mini robot using the MuJoCo physics engine.
+This module provides the MujocoController class for simulating the Reachy Mini robot using the MuJoCo physics engine.
 
 It includes methods for running the simulation, getting joint positions, and controlling the robot's joints.
 
@@ -18,7 +18,7 @@ import numpy.typing as npt
 
 import reachy_mini
 
-from ..abstract import Backend, MotorControlMode
+from ..abstract import MotorControlMode, MotorController
 from .utils import (
     get_actuator_names,
     get_joint_addr_from_name,
@@ -31,7 +31,7 @@ CAMERA_STUDIO_CLOSE = "studio_close"
 CAMERA_SIZES = {CAMERA_REACHY: (1280, 720), CAMERA_STUDIO_CLOSE: (640, 640)}
 
 
-class MujocoBackend(Backend):
+class MujocoController(MotorController):
     """Simulated Reachy Mini using MuJoCo."""
 
     # MuJoCo runs at higher frequency internally, decimated for control loop
@@ -46,7 +46,7 @@ class MujocoBackend(Backend):
         headless: bool = False,
         use_audio: bool = False,
     ) -> None:
-        """Initialize the MujocoBackend with a specified scene.
+        """Initialize the MujocoController with a specified scene.
 
         Args:
             scene (str): The name of the scene to load. Default is "empty".

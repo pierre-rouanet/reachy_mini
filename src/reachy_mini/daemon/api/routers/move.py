@@ -20,8 +20,8 @@ from pydantic import BaseModel
 
 from reachy_mini.motion.recorded_move import RecordedMoves
 
-from ....daemon.backend.abstract import Backend
-from ..dependencies import get_backend, ws_get_backend
+from reachy_mini.motor_controller.abstract import MotorController
+from ..dependencies import get_motor_controller, ws_get_motor_controller
 from ..models import AnyPose, FullBodyTarget
 
 move_tasks: dict[UUID, asyncio.Task[None]] = {}
@@ -147,11 +147,11 @@ async def get_running_moves() -> list[MoveUUID]:
 
 @router.post("/goto")
 async def goto(
-    goto_req: GotoModelRequest, backend: Backend = Depends(get_backend)
+    goto_req: GotoModelRequest, motor_controller: MotorController = Depends(get_motor_controller)
 ) -> MoveUUID:
     """Request a movement to a specific target."""
     return create_move_task(
-        backend.goto_target(
+        motor_controller.goto_target(
             head=goto_req.head_pose.to_pose_array() if goto_req.head_pose else None,
             antennas=np.array(goto_req.antennas) if goto_req.antennas else None,
             body_yaw=goto_req.body_yaw,
@@ -161,15 +161,15 @@ async def goto(
 
 
 @router.post("/play/wake_up")
-async def play_wake_up(backend: Backend = Depends(get_backend)) -> MoveUUID:
+async def play_wake_up(motor_controller: MotorController = Depends(get_motor_controller)) -> MoveUUID:
     """Request the robot to wake up."""
-    return create_move_task(backend.wake_up())
+    return create_move_task(motor_controller.wake_up())
 
 
 @router.post("/play/goto_sleep")
-async def play_goto_sleep(backend: Backend = Depends(get_backend)) -> MoveUUID:
+async def play_goto_sleep(motor_controller: MotorController = Depends(get_motor_controller)) -> MoveUUID:
     """Request the robot to go to sleep."""
-    return create_move_task(backend.goto_sleep())
+    return create_move_task(motor_controller.goto_sleep())
 
 
 @router.get("/recorded-move-datasets/list/{dataset_name:path}")
@@ -189,7 +189,7 @@ async def list_recorded_move_dataset(
 async def play_recorded_move_dataset(
     dataset_name: str,
     move_name: str,
-    backend: Backend = Depends(get_backend),
+    motor_controller: MotorController = Depends(get_motor_controller),
 ) -> MoveUUID:
     """Request the robot to play a predefined recorded move from a dataset."""
     try:
@@ -200,7 +200,7 @@ async def play_recorded_move_dataset(
         move = recorded_moves.get(move_name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return create_move_task(backend.play_move(move))
+    return create_move_task(motor_controller.play_move(move))
 
 
 @router.post("/stop")
@@ -227,14 +227,14 @@ async def ws_move_updates(
 @router.post("/set_target")
 async def set_target(
     target: FullBodyTarget,
-    backend: Backend = Depends(get_backend),
+    motor_controller: MotorController = Depends(get_motor_controller),
 ) -> dict[str, str]:
     """POST route to set a single FullBodyTarget."""
-    if backend.is_move_running:
+    if motor_controller.is_move_running:
         # Avoid fighting with the daemon while a trajectory is running
-        backend.logger.warning("Ignoring set_target request: move already running.")
+        motor_controller.logger.warning("Ignoring set_target request: move already running.")
         return {"status": "ignored", "reason": "move_running"}
-    backend.set_target(
+    motor_controller.set_target(
         head=target.target_head_pose.to_pose_array()
         if target.target_head_pose
         else None,
@@ -246,7 +246,7 @@ async def set_target(
 
 @router.websocket("/ws/set_target")
 async def ws_set_target(
-    websocket: WebSocket, backend: Backend = Depends(ws_get_backend)
+    websocket: WebSocket, motor_controller: MotorController = Depends(ws_get_motor_controller)
 ) -> None:
     """WebSocket route to stream FullBodyTarget set_target calls."""
     await websocket.accept()
@@ -268,7 +268,7 @@ async def ws_set_target(
 @router.websocket("/ws/raw/write")
 async def write(
     websocket: WebSocket,
-    backend: Backend = Depends(ws_get_backend),
+    motor_controller: MotorController = Depends(ws_get_motor_controller),
 ) -> None:
     """WebSocket endpoint to stream raw packet to the serialport and return any response buffer.
 
@@ -279,7 +279,7 @@ async def write(
     try:
         while True:
             data = await websocket.receive_bytes()
-            raw_response_packet: bytes = backend.write_raw_packet(data)
+            raw_response_packet: bytes = motor_controller.write_raw_packet(data)
             await websocket.send_bytes(raw_response_packet)
     except WebSocketDisconnect:
         pass

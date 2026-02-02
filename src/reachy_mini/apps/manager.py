@@ -12,7 +12,7 @@ import numpy as np
 import psutil
 from pydantic import BaseModel
 
-from reachy_mini.daemon.backend.robot import RobotBackend
+from reachy_mini.motor_controller.robot import RobotController
 
 from . import AppInfo, SourceKind
 from .sources import hf_space, local_common_venv
@@ -239,15 +239,15 @@ class AppManager:
                 pass
 
         # Return robot to zero position after app stops
-        if self.daemon is not None and self.daemon.backend is not None:
-            if isinstance(self.daemon.backend, RobotBackend):
-                self.daemon.backend.enable_motors()
+        if self.daemon is not None and self.daemon.motor_controller is not None:
+            if isinstance(self.daemon.motor_controller, RobotController):
+                self.daemon.motor_controller.enable_motors()
 
             try:
                 from reachy_mini.reachy_mini import INIT_HEAD_POSE
 
                 self.logger.getChild("runner").info("Returning robot to zero position")
-                await self.daemon.backend.goto_target(
+                await self.daemon.motor_controller.goto_target(
                     head=INIT_HEAD_POSE,
                     antennas=np.array([0.0, 0.0]),
                     duration=1.0,

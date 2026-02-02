@@ -1,6 +1,6 @@
-"""Robot Backend for Reachy Mini.
+"""Robot Motor Controller for Reachy Mini.
 
-This module provides the `RobotBackend` class, which interfaces with the Reachy Mini motor controller
+This module provides the `RobotController` class, which interfaces with the Reachy Mini hardware
 to control the robot's movements and manage its status.
 """
 
@@ -16,11 +16,11 @@ from reachy_mini_motor_controller import ReachyMiniPyControlLoop
 
 from reachy_mini.utils.hardware_config.parser import parse_yaml_config
 
-from ..abstract import Backend, MotorControlMode
+from ..abstract import MotorControlMode, MotorController
 
 
-class RobotBackend(Backend):
-    """Real robot backend for Reachy Mini."""
+class RobotController(MotorController):
+    """Real robot motor controller for Reachy Mini."""
 
     control_frequency: float = 50.0
 
@@ -35,7 +35,7 @@ class RobotBackend(Backend):
         wireless_version: bool = False,
         hardware_config_filepath: str | None = None,
     ):
-        """Initialize the RobotBackend.
+        """Initialize the RobotController.
 
         Args:
             serialport (str): The serial port to which the Reachy Mini is connected.

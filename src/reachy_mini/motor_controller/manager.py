@@ -1,7 +1,7 @@
-"""Backend manager for Reachy Mini robot.
+"""Motor manager for Reachy Mini robot.
 
-This module provides the BackendManager class that handles the lifecycle
-of robot backends (MuJoCo simulation, mockup simulation, or real hardware).
+This module provides the MotorManager class that handles the lifecycle
+of motor controllers (MuJoCo simulation, mockup simulation, or real hardware).
 """
 
 import logging
@@ -9,28 +9,28 @@ from dataclasses import dataclass
 from threading import Thread
 from typing import Any, Optional
 
-from reachy_mini.daemon.backend.abstract import Backend, BackendStatus, MotorControlMode
+from reachy_mini.motor_controller.abstract import MotorController, MotorControllerStatus, MotorControlMode
 from reachy_mini.daemon.utils import find_serial_port
 from reachy_mini.tools.reflash_motors import reflash_motors
 
-from .backend.mockup_sim import MockupSimBackend
-from .backend.mujoco import MujocoBackend
-from .backend.robot import RobotBackend
+from .mockup_sim import MockupController
+from .mujoco import MujocoController
+from .robot import RobotController
 
 
 @dataclass
-class BackendManagerStatus:
-    """Status of the BackendManager."""
+class MotorManagerStatus:
+    """Status of the MotorManager."""
 
     ready: bool
     error: Optional[str]
-    backend_status: Optional[BackendStatus]
+    motor_controller_status: Optional[MotorControllerStatus]
 
 
-class BackendManager:
-    """Manages robot backend lifecycle.
+class MotorManager:
+    """Manages motor controller lifecycle.
 
-    Handles creation, startup, shutdown, and monitoring of the robot backend
+    Handles creation, startup, shutdown, and monitoring of the motor controller
     (MuJoCo simulation, mockup simulation, or real hardware).
     """
 
@@ -39,10 +39,10 @@ class BackendManager:
         log_level: str = "INFO",
         wireless_version: bool = False,
     ) -> None:
-        """Initialize the BackendManager.
+        """Initialize the MotorManager.
 
         Args:
-            log_level: Logging level for the backend manager.
+            log_level: Logging level for the motor manager.
             wireless_version: Whether running on wireless Reachy Mini hardware.
 
         """
@@ -52,21 +52,21 @@ class BackendManager:
 
         self.wireless_version = wireless_version
 
-        self.backend: Backend | None = None
-        self._backend_thread: Thread | None = None
+        self.motor_controller: MotorController | None = None
+        self._motor_controller_thread: Thread | None = None
         self._start_params: dict[str, Any] = {}
         self._error: Optional[str] = None
 
     @property
     def ready(self) -> bool:
-        """Check if the backend is ready."""
-        return self.backend is not None and self.backend.ready.is_set()
+        """Check if the motor controller is ready."""
+        return self.motor_controller is not None and self.motor_controller.ready.is_set()
 
     @property
     def error(self) -> Optional[str]:
         """Get the last error message."""
-        if self.backend is not None and self.backend.error:
-            return self.backend.error
+        if self.motor_controller is not None and self.motor_controller.error:
+            return self.motor_controller.error
         return self._error
 
     async def start(
@@ -82,7 +82,7 @@ class BackendManager:
         hardware_config_filepath: str | None = None,
         reflash_motors_on_start: bool = True,
     ) -> None:
-        """Start the backend.
+        """Start the motor controller.
 
         Args:
             sim: If True, run in simulation mode using MuJoCo.
@@ -97,11 +97,11 @@ class BackendManager:
             reflash_motors_on_start: If True, reflash motors on startup.
 
         Raises:
-            RuntimeError: If the backend fails to start.
+            RuntimeError: If the motor controller fails to start.
 
         """
-        if self.backend is not None:
-            self.logger.warning("Backend already running, stop it first.")
+        if self.motor_controller is not None:
+            self.logger.warning("Motor controller already running, stop it first.")
             return
 
         self._start_params = {
@@ -117,12 +117,12 @@ class BackendManager:
         }
 
         self.logger.info(
-            f"Starting backend: sim={sim}, mockup_sim={mockup_sim}, "
+            f"Starting motor controller: sim={sim}, mockup_sim={mockup_sim}, "
             f"serialport={serialport}, scene={scene}"
         )
 
-        # Create the backend
-        self.backend = self._create_backend(
+        # Create the motor controller
+        self.motor_controller = self._create_motor_controller(
             sim=sim,
             mockup_sim=mockup_sim,
             serialport=serialport,
@@ -135,99 +135,99 @@ class BackendManager:
             reflash_motors_on_start=reflash_motors_on_start,
         )
 
-        # Start the backend thread
-        def backend_wrapped_run() -> None:
-            assert self.backend is not None
+        # Start the motor controller thread
+        def motor_controller_wrapped_run() -> None:
+            assert self.motor_controller is not None
             try:
-                self.backend.wrapped_run()
+                self.motor_controller.wrapped_run()
             except Exception as e:
-                self.logger.error(f"Backend encountered an error: {e}")
+                self.logger.error(f"Motor controller encountered an error: {e}")
                 self._error = str(e)
-                self.backend = None
+                self.motor_controller = None
 
-        self._backend_thread = Thread(target=backend_wrapped_run)
-        self._backend_thread.start()
+        self._motor_controller_thread = Thread(target=motor_controller_wrapped_run)
+        self._motor_controller_thread.start()
 
-        # Wait for backend to be ready
-        if not self.backend.ready.wait(timeout=2.0):
-            self._error = self.backend.error or "Backend not ready after 2 seconds"
+        # Wait for motor controller to be ready
+        if not self.motor_controller.ready.wait(timeout=2.0):
+            self._error = self.motor_controller.error or "Motor controller not ready after 2 seconds"
             self.logger.error(self._error)
             raise RuntimeError(self._error)
 
-        self.logger.info("Backend started successfully.")
+        self.logger.info("Motor controller started successfully.")
 
     async def stop(self, goto_sleep: bool = True) -> None:
-        """Stop the backend.
+        """Stop the motor controller.
 
         Args:
             goto_sleep: If True, put the robot to sleep before stopping.
 
         """
-        if self.backend is None:
-            self.logger.info("Backend not running.")
+        if self.motor_controller is None:
+            self.logger.info("Motor controller not running.")
             return
 
-        self.logger.info("Stopping backend...")
-        self.backend.is_shutting_down = True
+        self.logger.info("Stopping motor controller...")
+        self.motor_controller.is_shutting_down = True
 
         if goto_sleep:
             try:
                 self.logger.info("Putting robot to sleep...")
-                self.backend.set_motor_control_mode(MotorControlMode.Enabled)
-                await self.backend.goto_sleep()
-                self.backend.set_motor_control_mode(MotorControlMode.Disabled)
+                self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
+                await self.motor_controller.goto_sleep()
+                self.motor_controller.set_motor_control_mode(MotorControlMode.Disabled)
             except Exception as e:
                 self.logger.error(f"Error while putting robot to sleep: {e}")
             except KeyboardInterrupt:
                 self.logger.warning("Sleep interrupted by user.")
 
-        # Signal backend to stop and wait for thread
-        self.backend.should_stop.set()
-        if self._backend_thread is not None:
-            self._backend_thread.join(timeout=5.0)
-            if self._backend_thread.is_alive():
-                self.logger.warning("Backend did not stop in time.")
+        # Signal motor controller to stop and wait for thread
+        self.motor_controller.should_stop.set()
+        if self._motor_controller_thread is not None:
+            self._motor_controller_thread.join(timeout=5.0)
+            if self._motor_controller_thread.is_alive():
+                self.logger.warning("Motor controller did not stop in time.")
 
         # Clean up
-        self.backend.close()
-        self.backend.ready.clear()
-        self.backend = None
-        self._backend_thread = None
+        self.motor_controller.close()
+        self.motor_controller.ready.clear()
+        self.motor_controller = None
+        self._motor_controller_thread = None
 
-        self.logger.info("Backend stopped.")
+        self.logger.info("Motor controller stopped.")
 
     async def wake_up(self) -> None:
         """Wake up the robot (enable motors and move to initial position)."""
-        if self.backend is None:
-            raise RuntimeError("Backend not running")
+        if self.motor_controller is None:
+            raise RuntimeError("Motor controller not running")
 
         self.logger.info("Waking up robot...")
-        self.backend.set_motor_control_mode(MotorControlMode.Enabled)
-        await self.backend.wake_up()
+        self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
+        await self.motor_controller.wake_up()
 
     async def goto_sleep(self) -> None:
         """Put the robot to sleep (move to sleep position and disable motors)."""
-        if self.backend is None:
-            raise RuntimeError("Backend not running")
+        if self.motor_controller is None:
+            raise RuntimeError("Motor controller not running")
 
         self.logger.info("Putting robot to sleep...")
-        self.backend.set_motor_control_mode(MotorControlMode.Enabled)
-        await self.backend.goto_sleep()
-        self.backend.set_motor_control_mode(MotorControlMode.Disabled)
+        self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
+        await self.motor_controller.goto_sleep()
+        self.motor_controller.set_motor_control_mode(MotorControlMode.Disabled)
 
-    def status(self) -> BackendManagerStatus:
-        """Get the current status of the backend manager."""
-        backend_status = None
-        if self.backend is not None:
-            backend_status = self.backend.get_status()
+    def status(self) -> MotorManagerStatus:
+        """Get the current status of the motor manager."""
+        motor_controller_status = None
+        if self.motor_controller is not None:
+            motor_controller_status = self.motor_controller.get_status()
 
-        return BackendManagerStatus(
+        return MotorManagerStatus(
             ready=self.ready,
             error=self.error,
-            backend_status=backend_status,
+            motor_controller_status=motor_controller_status,
         )
 
-    def _create_backend(
+    def _create_motor_controller(
         self,
         sim: bool,
         mockup_sim: bool,
@@ -239,12 +239,12 @@ class BackendManager:
         use_audio: bool,
         hardware_config_filepath: str | None = None,
         reflash_motors_on_start: bool = True,
-    ) -> Backend:
-        """Create the appropriate backend instance.
+    ) -> MotorController:
+        """Create the appropriate motor controller instance.
 
         Args:
-            sim: If True, create MuJoCo simulation backend.
-            mockup_sim: If True, create mockup simulation backend.
+            sim: If True, create MuJoCo simulation controller.
+            mockup_sim: If True, create mockup simulation controller.
             serialport: Serial port for real motors.
             scene: Scene to load in simulation.
             check_collision: Enable collision checking.
@@ -255,20 +255,20 @@ class BackendManager:
             reflash_motors_on_start: Reflash motors on startup.
 
         Returns:
-            The created backend instance.
+            The created motor controller instance.
 
         Raises:
             RuntimeError: If serial port auto-detection fails.
 
         """
         if mockup_sim:
-            return MockupSimBackend(
+            return MockupController(
                 check_collision=check_collision,
                 kinematics_engine=kinematics_engine,
                 use_audio=use_audio,
             )
         elif sim:
-            return MujocoBackend(
+            return MujocoController(
                 scene=scene,
                 check_collision=check_collision,
                 kinematics_engine=kinematics_engine,
@@ -276,7 +276,7 @@ class BackendManager:
                 use_audio=use_audio,
             )
         else:
-            # Real robot backend
+            # Real robot motor controller
             if serialport == "auto":
                 ports = find_serial_port(wireless_version=self.wireless_version)
 
@@ -296,14 +296,14 @@ class BackendManager:
                 self.logger.info(f"Found Reachy Mini serial port: {serialport}")
 
             self.logger.info(
-                f"Creating RobotBackend: serialport={serialport}, "
+                f"Creating RobotController: serialport={serialport}, "
                 f"check_collision={check_collision}, kinematics_engine={kinematics_engine}"
             )
 
             if reflash_motors_on_start:
                 reflash_motors(serialport, dont_light_up=True)
 
-            return RobotBackend(
+            return RobotController(
                 serialport=serialport,
                 log_level=self.log_level,
                 check_collision=check_collision,

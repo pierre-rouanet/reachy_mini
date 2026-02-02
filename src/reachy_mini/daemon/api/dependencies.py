@@ -3,7 +3,7 @@
 from fastapi import HTTPException, Request, WebSocket
 
 from ...apps.manager import AppManager
-from ..backend.abstract import Backend
+from reachy_mini.motor_controller.abstract import MotorController
 from ..daemon import Daemon
 
 
@@ -13,15 +13,15 @@ def get_daemon(request: Request) -> Daemon:
     return request.app.state.daemon
 
 
-def get_backend(request: Request) -> Backend:
-    """Get the backend as request dependency."""
-    backend = request.app.state.daemon.backend
+def get_motor_controller(request: Request) -> MotorController:
+    """Get the motor controller as request dependency."""
+    motor_controller = request.app.state.daemon.motor_controller
 
-    if backend is None or not backend.ready.is_set():
-        raise HTTPException(status_code=503, detail="Backend not running")
+    if motor_controller is None or not motor_controller.ready.is_set():
+        raise HTTPException(status_code=503, detail="Motor controller not running")
 
-    assert isinstance(backend, Backend)
-    return backend
+    assert isinstance(motor_controller, MotorController)
+    return motor_controller
 
 
 def get_app_manager(request: Request) -> "AppManager":
@@ -30,12 +30,12 @@ def get_app_manager(request: Request) -> "AppManager":
     return request.app.state.app_manager
 
 
-def ws_get_backend(websocket: WebSocket) -> Backend:
-    """Get the backend as websocket dependency."""
-    backend = websocket.app.state.daemon.backend
+def ws_get_motor_controller(websocket: WebSocket) -> MotorController:
+    """Get the motor controller as websocket dependency."""
+    motor_controller = websocket.app.state.daemon.motor_controller
 
-    if backend is None or not backend.ready.is_set():
-        raise HTTPException(status_code=503, detail="Backend not running")
+    if motor_controller is None or not motor_controller.ready.is_set():
+        raise HTTPException(status_code=503, detail="Motor controller not running")
 
-    assert isinstance(backend, Backend)
-    return backend
+    assert isinstance(motor_controller, MotorController)
+    return motor_controller

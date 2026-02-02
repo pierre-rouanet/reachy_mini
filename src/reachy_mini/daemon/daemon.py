@@ -1,7 +1,7 @@
 """Daemon for Reachy Mini robot.
 
 This module provides the main Daemon class that orchestrates all components:
-- BackendManager: Robot control lifecycle (simulation or real hardware)
+- MotorManager: Motor control lifecycle (simulation or real hardware)
 - InterfaceManager: Communication interfaces (FastAPI, WebRTC)
 - AppManager: User application lifecycle
 
@@ -18,13 +18,13 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from reachy_mini.apps.manager import AppManager
 from reachy_mini.daemon.args import DaemonArgs
-from reachy_mini.daemon.backend.abstract import BackendStatus
-from reachy_mini.daemon.backend_manager import BackendManager
+from reachy_mini.motor_controller.abstract import MotorControllerStatus
+from reachy_mini.motor_controller.manager import MotorManager
 from reachy_mini.daemon.interface_manager import InterfaceManager
 from reachy_mini.daemon.utils import get_ip_address
 
 if TYPE_CHECKING:
-    from reachy_mini.daemon.backend.abstract import Backend
+    from reachy_mini.motor_controller.abstract import MotorController
 
 
 class DaemonState(Enum):
@@ -48,7 +48,7 @@ class DaemonStatus:
     desktop_app_daemon: bool
     simulation_enabled: Optional[bool]
     mockup_sim_enabled: Optional[bool]
-    backend_status: Optional[BackendStatus]
+    motor_controller_status: Optional[MotorControllerStatus]
     error: Optional[str] = None
     wlan_ip: Optional[str] = None
     version: Optional[str] = None
@@ -57,7 +57,7 @@ class DaemonStatus:
 class Daemon:
     """Main daemon orchestrator for Reachy Mini robot.
 
-    Orchestrates BackendManager (robot control), InterfaceManager (HTTP/WebRTC),
+    Orchestrates MotorManager (robot control), InterfaceManager (HTTP/WebRTC),
     and AppManager (user apps) to provide a unified daemon interface.
 
     Can be used as an async context manager:
@@ -100,14 +100,14 @@ class Daemon:
             desktop_app_daemon=self._config.desktop_app_daemon,
             simulation_enabled=None,
             mockup_sim_enabled=None,
-            backend_status=None,
+            motor_controller_status=None,
             error=None,
             wlan_ip=None,
             version=package_version,
         )
 
         # Create managers
-        self._backend_manager = BackendManager(
+        self._motor_manager = MotorManager(
             log_level=self._config.log_level.value,
             wireless_version=self._config.wireless_version,
         )
@@ -142,9 +142,9 @@ class Daemon:
         await self.stop()
 
     @property
-    def backend(self) -> Optional["Backend"]:
-        """Convenience access to the current backend."""
-        return self._backend_manager.backend
+    def motor_controller(self) -> Optional["MotorController"]:
+        """Convenience access to the current motor controller."""
+        return self._motor_manager.motor_controller
 
     @property
     def app_manager(self) -> AppManager:
@@ -193,10 +193,10 @@ class Daemon:
         self.logger.info("Starting Reachy Mini daemon...")
         self._status.state = DaemonState.STARTING
 
-        # 1. Start the backend
-        backend_started = False
+        # 1. Start the motor controller
+        motor_started = False
         try:
-            await self._backend_manager.start(
+            await self._motor_manager.start(
                 sim=self._config.sim,
                 mockup_sim=self._config.mockup_sim,
                 serialport=self._config.serialport,
@@ -207,17 +207,17 @@ class Daemon:
                 use_audio=self._config.use_audio,
                 hardware_config_filepath=self._config.hardware_config_filepath,
             )
-            backend_started = True
+            motor_started = True
         except Exception as e:
-            self.logger.error(f"Error while starting backend: {e}")
+            self.logger.error(f"Error while starting motor controller: {e}")
             self._status.state = DaemonState.ERROR
             self._status.error = str(e)
             # Continue to start FastAPI so status can be queried
 
-        # 2. Wake up if requested (only if backend started successfully)
-        if backend_started and self._config.wake_up_on_start:
+        # 2. Wake up if requested (only if motor controller started successfully)
+        if motor_started and self._config.wake_up_on_start:
             try:
-                await self._backend_manager.wake_up()
+                await self._motor_manager.wake_up()
             except Exception as e:
                 self.logger.error(f"Error while waking up Reachy Mini: {e}")
                 self._status.state = DaemonState.ERROR
@@ -226,18 +226,18 @@ class Daemon:
                 self.logger.warning("Wake up interrupted by user.")
                 self._status.state = DaemonState.STOPPING
 
-        # 3. Start WebRTC interface (if enabled and backend started)
-        if backend_started:
+        # 3. Start WebRTC interface (if enabled and motor controller started)
+        if motor_started:
             await self._interface_manager.start_webrtc()
 
         # 4. Start FastAPI server (always start so status can be queried)
         await self._interface_manager.start_server(self._config)
 
-        if backend_started and self._status.state != DaemonState.ERROR:
+        if motor_started and self._status.state != DaemonState.ERROR:
             self.logger.info("Daemon started successfully.")
             self._status.state = DaemonState.RUNNING
         else:
-            self.logger.warning("Daemon started with errors (backend failed).")
+            self.logger.warning("Daemon started with errors (motor controller failed).")
 
         return self._status.state
 
@@ -270,9 +270,9 @@ class Daemon:
             # 1. Pause WebRTC (keep signaling server running for restart)
             self._interface_manager.pause_webrtc()
 
-            # 2. Stop the backend (if running)
-            if self._backend_manager.ready:
-                await self._backend_manager.stop(goto_sleep=goto_sleep_on_stop)
+            # 2. Stop the motor controller (if running)
+            if self._motor_manager.ready:
+                await self._motor_manager.stop(goto_sleep=goto_sleep_on_stop)
 
             # 3. Stop FastAPI server
             await self._interface_manager.stop_server()
@@ -325,23 +325,23 @@ class Daemon:
             DaemonStatus: The current daemon status.
 
         """
-        backend_status = self._backend_manager.status()
-        self._status.backend_status = backend_status.backend_status
+        motor_status = self._motor_manager.status()
+        self._status.motor_controller_status = motor_status.motor_controller_status
 
-        if backend_status.error:
+        if motor_status.error:
             self._status.state = DaemonState.ERROR
-            self._status.error = backend_status.error
+            self._status.error = motor_status.error
 
         return self._status
 
     async def run4ever(self) -> None:
         """Run the Reachy Mini daemon indefinitely.
 
-        Starts the daemon (backend + FastAPI server) and blocks until shutdown.
+        Starts the daemon (motor controller + FastAPI server) and blocks until shutdown.
         This is the main entry point when running from main.py.
 
         Respects config options:
-        - autostart: If False, only starts FastAPI server (backend via API)
+        - autostart: If False, only starts FastAPI server (motor controller via API)
         - preload_datasets: Pre-download recorded move datasets at startup
         - dataset_update_interval_hours: Interval for background dataset updates
         """

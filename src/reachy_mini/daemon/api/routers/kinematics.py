@@ -10,8 +10,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
-from ....daemon.backend.abstract import Backend
-from ..dependencies import get_backend
+from reachy_mini.motor_controller.abstract import MotorController
+from ..dependencies import get_motor_controller
 
 router = APIRouter(
     prefix="/kinematics",
@@ -28,21 +28,21 @@ STL_ASSETS_DIR = (
 
 @router.get("/info")
 async def get_kinematics_info(
-    backend: Backend = Depends(get_backend),
+    motor_controller: MotorController = Depends(get_motor_controller),
 ) -> dict[str, Any]:
     """Get the current information of the kinematics."""
     return {
         "info": {
-            "engine": backend.kinematics_engine,
-            "collision check": backend.check_collision,
+            "engine": motor_controller.kinematics_engine,
+            "collision check": motor_controller.check_collision,
         }
     }
 
 
 @router.get("/urdf")
-async def get_urdf(backend: Backend = Depends(get_backend)) -> dict[str, str]:
+async def get_urdf(motor_controller: MotorController = Depends(get_motor_controller)) -> dict[str, str]:
     """Get the URDF representation of the robot."""
-    return {"urdf": backend.get_urdf()}
+    return {"urdf": motor_controller.get_urdf()}
 
 
 @router.get("/stl/{filename}")

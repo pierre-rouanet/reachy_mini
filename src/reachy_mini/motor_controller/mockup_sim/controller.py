@@ -1,6 +1,6 @@
-"""Mockup Simulation Backend for Reachy Mini.
+"""Mockup Simulation Motor Controller for Reachy Mini.
 
-A lightweight simulation backend that doesn't require MuJoCo.
+A lightweight simulation controller that doesn't require MuJoCo.
 Target positions become current positions immediately (no physics).
 The kinematics engine is still used for FK/IK computations.
 
@@ -10,13 +10,13 @@ Apps open the webcam/microphone directly (like with a real robot).
 import numpy as np
 import numpy.typing as npt
 
-from ..abstract import Backend, MotorControlMode
+from ..abstract import MotorControlMode, MotorController
 
 
-class MockupSimBackend(Backend):
+class MockupController(MotorController):
     """Lightweight simulated Reachy Mini without MuJoCo.
 
-    This backend provides a simple simulation where target positions
+    This controller provides a simple simulation where target positions
     are applied immediately without physics simulation.
 
     Apps access webcam/microphone directly (not via UDP streaming).
@@ -28,7 +28,7 @@ class MockupSimBackend(Backend):
         kinematics_engine: str = "AnalyticalKinematics",
         use_audio: bool = True,
     ) -> None:
-        """Initialize the MockupSimBackend.
+        """Initialize the MockupController.
 
         Args:
             check_collision: If True, enable collision checking. Default is False.
