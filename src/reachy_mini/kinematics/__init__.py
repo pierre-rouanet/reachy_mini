@@ -30,6 +30,12 @@ except ImportError:
                 "NNKinematics could not be imported. Make sure you run pip install reachy_mini[nn_kinematics]."
             )
 
+        def set_automatic_body_yaw(self, automatic_body_yaw: bool) -> None:
+            """Mockup method for set_automatic_body_yaw."""
+            raise ImportError(
+                "NNKinematics could not be imported. Make sure you run pip install reachy_mini[nn_kinematics]."
+            )
+
     NNKinematics = MockupNNKinematics  # type: ignore[assignment, misc]
 
 try:
@@ -53,6 +59,12 @@ except ImportError:
 
         def fk(self, *args, **kwargs) -> Annotated[npt.NDArray[np.float64], (4, 4)]:  # type: ignore[no-untyped-def]
             """Mockup method for fk."""
+            raise ImportError(
+                "PlacoKinematics could not be imported. Make sure you run pip install reachy_mini[placo_kinematics]."
+            )
+
+        def set_automatic_body_yaw(self, automatic_body_yaw: bool) -> None:
+            """Mockup method for set_automatic_body_yaw."""
             raise ImportError(
                 "PlacoKinematics could not be imported. Make sure you run pip install reachy_mini[placo_kinematics]."
             )
