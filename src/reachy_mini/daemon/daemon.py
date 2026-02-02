@@ -288,6 +288,7 @@ class Daemon:
         self._status.state = DaemonState.STARTING
 
         # 1. Start the backend
+        backend_started = False
         try:
             await self._backend_manager.start(
                 sim=sim,
@@ -300,30 +301,30 @@ class Daemon:
                 use_audio=use_audio,
                 hardware_config_filepath=hardware_config_filepath,
             )
+            backend_started = True
         except Exception as e:
             self.logger.error(f"Error while starting backend: {e}")
             self._status.state = DaemonState.ERROR
             self._status.error = str(e)
-            return self._status.state
+            # Continue to start FastAPI so status can be queried
 
-        # 2. Wake up if requested
-        if wake_up_on_start:
+        # 2. Wake up if requested (only if backend started successfully)
+        if backend_started and wake_up_on_start:
             try:
                 await self._backend_manager.wake_up()
             except Exception as e:
                 self.logger.error(f"Error while waking up Reachy Mini: {e}")
                 self._status.state = DaemonState.ERROR
                 self._status.error = str(e)
-                return self._status.state
             except KeyboardInterrupt:
                 self.logger.warning("Wake up interrupted by user.")
                 self._status.state = DaemonState.STOPPING
-                return self._status.state
 
-        # 3. Start WebRTC interface (if enabled)
-        await self._interface_manager.start_webrtc()
+        # 3. Start WebRTC interface (if enabled and backend started)
+        if backend_started:
+            await self._interface_manager.start_webrtc()
 
-        # 4. Start FastAPI server
+        # 4. Start FastAPI server (always start so status can be queried)
         server_args = DaemonArgs(
             fastapi_host=fastapi_host,
             fastapi_port=fastapi_port,
@@ -339,8 +340,12 @@ class Daemon:
         )
         await self._interface_manager.start_server(server_args)
 
-        self.logger.info("Daemon started successfully.")
-        self._status.state = DaemonState.RUNNING
+        if backend_started and self._status.state != DaemonState.ERROR:
+            self.logger.info("Daemon started successfully.")
+            self._status.state = DaemonState.RUNNING
+        else:
+            self.logger.warning("Daemon started with errors (backend failed).")
+
         return self._status.state
 
     async def stop(self, goto_sleep_on_stop: bool = True) -> DaemonState:
@@ -357,11 +362,6 @@ class Daemon:
             self.logger.warning("Daemon is already stopped.")
             return self._status.state
 
-        if not self._backend_manager.ready:
-            self.logger.info("Daemon backend is not initialized.")
-            self._status.state = DaemonState.STOPPED
-            return self._status.state
-
         try:
             if self._status.state in (DaemonState.STOPPING, DaemonState.ERROR):
                 goto_sleep_on_stop = False
@@ -372,15 +372,15 @@ class Daemon:
             # 1. Pause WebRTC (keep signaling server running for restart)
             self._interface_manager.pause_webrtc()
 
-            # 2. Stop the backend
-            await self._backend_manager.stop(goto_sleep=goto_sleep_on_stop)
+            # 2. Stop the backend (if running)
+            if self._backend_manager.ready:
+                await self._backend_manager.stop(goto_sleep=goto_sleep_on_stop)
 
             # 3. Stop FastAPI server
             await self._interface_manager.stop_server()
 
-            if self._status.state != DaemonState.ERROR:
-                self.logger.info("Daemon stopped successfully.")
-                self._status.state = DaemonState.STOPPED
+            self.logger.info("Daemon stopped successfully.")
+            self._status.state = DaemonState.STOPPED
 
         except Exception as e:
             self.logger.error(f"Error while stopping the daemon: {e}")
