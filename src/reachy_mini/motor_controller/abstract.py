@@ -8,7 +8,6 @@ It is designed to be extended by subclasses that implement the specific behavior
 each type of controller.
 """
 
-import asyncio
 import logging
 import threading
 import time
@@ -21,19 +20,10 @@ from typing import Annotated, Any, Dict, Optional
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.spatial.transform import Rotation as R
 
 if typing.TYPE_CHECKING:
     from reachy_mini.kinematics import AnyKinematics
-from reachy_mini.media.media_manager import MediaBackend, MediaManager
-from reachy_mini.motion.goto import GotoMove
-from reachy_mini.motion.move import Move
 from reachy_mini.utils.constants import MODELS_ROOT_PATH, URDF_ROOT_PATH
-from reachy_mini.utils.interpolation import (
-    InterpolationTechnique,
-    distance_between_poses,
-    time_trajectory,
-)
 
 
 class MotorControlMode(str, Enum):
@@ -83,14 +73,11 @@ class MotorController(ABC):
         log_level: str = "INFO",
         check_collision: bool = False,
         kinematics_engine: str = "AnalyticalKinematics",
-        use_audio: bool = True,
         wireless_version: bool = False,
     ) -> None:
         """Initialize the backend."""
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(log_level)
-
-        self.use_audio = use_audio
 
         self.should_stop = threading.Event()
         self.ready = threading.Event()
@@ -182,13 +169,6 @@ class MotorController(ABC):
             "rad": 2e-3,  # rads
             "m": 0.5e-3,  # m
         }
-
-        self.audio: Optional[MediaManager] = None
-        if self.use_audio:
-            self.logger.debug("Initializing daemon audio backend.")
-            self.audio = MediaManager(
-                backend=MediaBackend.GSTREAMER_NO_VIDEO, log_level=log_level
-            )
 
         # Guard to ensure only one play_move/goto is executed at a time (goto itself uses play_move, so we need an RLock)
         self._play_move_lock = threading.RLock()
@@ -369,9 +349,6 @@ class MotorController(ABC):
         Subclasses must still implement their own cleanup for backend-specific resources.
         """
         self.logger.debug("MotorController.close() - cleaning up resources")
-        if self.audio is not None:
-            self.audio.close()
-            self.audio = None
 
     @property
     def is_move_running(self) -> bool:
@@ -514,155 +491,6 @@ class MotorController(ABC):
         self.target_head_joint_current = current
         self.ik_required = False
 
-    async def play_move(
-        self,
-        move: Move,
-        play_frequency: float = 100.0,
-        initial_goto_duration: float = 0.0,
-    ) -> None:
-        """Asynchronously play a Move.
-
-        Args:
-            move (Move): The Move object to be played.
-            play_frequency (float): The frequency at which to evaluate the move (in Hz).
-            initial_goto_duration (float): Duration for an initial goto to the move's starting position. If 0.0, no initial goto is performed.
-
-        """
-        if not self._try_start_move():
-            self.logger.warning("Ignoring play_move request: another move is running.")
-            return
-
-        try:
-            if initial_goto_duration > 0.0:
-                start_head_pose, start_antennas_positions, start_body_yaw = (
-                    move.evaluate(0.0)
-                )
-                await self.goto_target(
-                    head=start_head_pose,
-                    antennas=start_antennas_positions,
-                    duration=initial_goto_duration,
-                    body_yaw=start_body_yaw,
-                )
-            sleep_period = 1.0 / play_frequency
-
-            if move.sound_path is not None and self.audio is not None:
-                self.play_sound(str(move.sound_path))
-
-            t0 = time.time()
-            while time.time() - t0 < move.duration:
-                t = time.time() - t0
-
-                head, antennas, body_yaw = move.evaluate(t)
-                if head is not None:
-                    self.set_target_head_pose(head)
-                if body_yaw is not None:
-                    self.set_target_body_yaw(body_yaw)
-                if antennas is not None:
-                    self.set_target_antenna_joint_positions(antennas)
-
-                elapsed = time.time() - t0 - t
-                if elapsed < sleep_period:
-                    await asyncio.sleep(sleep_period - elapsed)
-                else:
-                    await asyncio.sleep(0.001)
-        finally:
-            if move.sound_path is not None and self.audio is not None:
-                # release audio resources after playing the move sound
-                self.audio.stop_playing()
-            self._end_move()
-
-    async def goto_target(
-        self,
-        head: Annotated[NDArray[np.float64], (4, 4)] | None = None,  # 4x4 pose matrix
-        antennas: Annotated[NDArray[np.float64], (2,)]
-        | None = None,  # [right_angle, left_angle] (in rads)
-        duration: float = 0.5,  # Duration in seconds for the movement, default is 0.5 seconds.
-        method: InterpolationTechnique = InterpolationTechnique.MIN_JERK,  # can be "linear", "minjerk", "ease" or "cartoon", default is "minjerk"
-        body_yaw: float | None = 0.0,  # Body yaw angle in radians
-    ) -> None:
-        """Asynchronously go to a target head pose and/or antennas position using task space interpolation, in "duration" seconds.
-
-        Args:
-            head (np.ndarray | None): 4x4 pose matrix representing the target head pose.
-            antennas (np.ndarray | list[float] | None): 1D array with two elements representing the angles of the antennas in radians.
-            duration (float): Duration of the movement in seconds.
-            method (str): Interpolation method to use ("linear", "minjerk", "ease", "cartoon"). Default is "minjerk".
-            body_yaw (float | None): Body yaw angle in radians.
-
-        Raises:
-            ValueError: If neither head nor antennas are provided, or if duration is not positive.
-
-        """
-        return await self.play_move(
-            move=GotoMove(
-                start_head_pose=self.get_present_head_pose(),
-                target_head_pose=head,
-                start_body_yaw=self.get_present_body_yaw(),
-                target_body_yaw=body_yaw,
-                start_antennas=np.array(self.get_present_antenna_joint_positions()),
-                target_antennas=np.array(antennas) if antennas is not None else None,
-                duration=duration,
-                method=method,
-            )
-        )
-
-    async def goto_joint_positions(
-        self,
-        head_joint_positions: list[float]
-        | None = None,  # [yaw, stewart_platform x 6] length 7
-        antennas_joint_positions: list[float]
-        | None = None,  # [right_angle, left_angle] length 2
-        duration: float = 0.5,  # Duration in seconds for the movement
-        method: InterpolationTechnique = InterpolationTechnique.MIN_JERK,  # can be "linear", "minjerk", "ease" or "cartoon", default is "minjerk"
-    ) -> None:
-        """Asynchronously go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
-
-        Go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
-
-        Args:
-            head_joint_positions (Optional[List[float]]): List of head joint positions in radians (length 7).
-            antennas_joint_positions (Optional[List[float]]): List of antennas joint positions in radians (length 2).
-            duration (float): Duration of the movement in seconds. Default is 0.5 seconds.
-            method (str): Interpolation method to use ("linear", "minjerk", "ease", "cartoon"). Default is "minjerk".
-
-        Raises:
-            ValueError: If neither head_joint_positions nor antennas_joint_positions are provided, or if duration is not positive.
-
-        """
-        if duration <= 0.0:
-            raise ValueError(
-                "Duration must be positive and non-zero. Use set_target() for immediate position setting."
-            )
-
-        start_head = np.array(self.get_present_head_joint_positions())
-        start_antennas = np.array(self.get_present_antenna_joint_positions())
-
-        target_head = (
-            np.array(head_joint_positions)
-            if head_joint_positions is not None
-            else start_head
-        )
-        target_antennas = (
-            np.array(antennas_joint_positions)
-            if antennas_joint_positions is not None
-            else start_antennas
-        )
-
-        t0 = time.time()
-        while time.time() - t0 < duration:
-            t = time.time() - t0
-
-            interp_time = time_trajectory(t / duration, method=method)
-
-            head_joint = start_head + (target_head - start_head) * interp_time
-            antennas_joint = (
-                start_antennas + (target_antennas - start_antennas) * interp_time
-            )
-
-            self.set_target_head_joint_positions(head_joint)
-            self.set_target_antenna_joint_positions(antennas_joint)
-            await asyncio.sleep(0.01)
-
     def get_present_head_joint_positions(self) -> Annotated[NDArray[np.float64], (7,)]:
         """Return the present head joint positions."""
         if self.current_head_joint_positions is None:
@@ -757,20 +585,6 @@ class MotorController(ABC):
         with open(urdf_path, "r") as f:
             return f.read()
 
-    # Multimedia methods
-    def play_sound(self, sound_file: str) -> None:
-        """Play a sound file from the assets directory.
-
-        If the file is not found in the assets directory, try to load the path itself.
-
-        Args:
-            sound_file (str): The name of the sound file to play (e.g., "wake_up.wav").
-
-        """
-        if self.audio:
-            self.audio.start_playing()
-            self.audio.play_sound(sound_file)
-
     # Basic move definitions
     INIT_HEAD_POSE = np.eye(4)
 
@@ -793,78 +607,6 @@ class MotorController(ABC):
             [0.0, 0.0, 0.0, 1.0],
         ]
     )
-
-    async def wake_up(self) -> None:
-        """Wake up the robot - go to the initial head position and play the wake up emote and sound."""
-        await asyncio.sleep(0.1)
-
-        _, _, magic_distance = distance_between_poses(
-            self.get_current_head_pose(), self.INIT_HEAD_POSE
-        )
-
-        await self.goto_target(
-            self.INIT_HEAD_POSE,
-            antennas=np.array((0.0, 0.0)),
-            duration=magic_distance * 20 / 1000,  # ms_per_magic_mm = 10
-        )
-        await asyncio.sleep(0.1)
-
-        # Toudoum
-        self.play_sound("wake_up.wav")
-
-        # Roll 20° to the left
-        pose = self.INIT_HEAD_POSE.copy()
-        pose[:3, :3] = R.from_euler("xyz", [20, 0, 0], degrees=True).as_matrix()
-        await self.goto_target(pose, duration=0.2)
-
-        # Go back to the initial position
-        await self.goto_target(self.INIT_HEAD_POSE, duration=0.2)
-        if self.audio:
-            self.audio.stop_playing()
-
-    async def goto_sleep(self) -> None:
-        """Put the robot to sleep by moving the head and antennas to a predefined sleep position.
-
-        - If we are already very close to the sleep position, we do nothing.
-        - If we are far from the sleep position:
-            - If we are far from the initial position, we move there first.
-            - If we are close to the initial position, we move directly to the sleep position.
-        """
-        # Magic units
-        _, _, dist_to_sleep_pose = distance_between_poses(
-            self.get_current_head_pose(), self.SLEEP_HEAD_POSE
-        )
-        _, _, dist_to_init_pose = distance_between_poses(
-            self.get_current_head_pose(), self.INIT_HEAD_POSE
-        )
-        sleep_time = 2.0
-
-        # Thresholds found empirically.
-        if dist_to_sleep_pose > 10:
-            if dist_to_init_pose > 30:
-                # Move to the initial position
-                await self.goto_target(
-                    self.INIT_HEAD_POSE, antennas=np.array((0.0, 0.0)), duration=1
-                )
-                await asyncio.sleep(0.2)
-
-            self.play_sound("go_sleep.wav")
-
-            # Move to the sleep position
-            await self.goto_target(
-                self.SLEEP_HEAD_POSE,
-                antennas=self.SLEEP_ANTENNAS_JOINT_POSITIONS,
-                duration=2,
-            )
-        else:
-            # The sound doesn't play fully if we don't wait enough
-            self.play_sound("go_sleep.wav")
-            sleep_time += 3
-
-        self._last_head_pose = self.SLEEP_HEAD_POSE
-        await asyncio.sleep(sleep_time)
-        if self.audio:
-            self.audio.stop_playing()
 
     # Motor control modes
     @abstractmethod

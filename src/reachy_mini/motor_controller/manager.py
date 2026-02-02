@@ -13,7 +13,6 @@ from reachy_mini.daemon.utils import find_serial_port
 from reachy_mini.motor_controller.abstract import (
     MotorController,
     MotorControllerStatus,
-    MotorControlMode,
 )
 from reachy_mini.tools.reflash_motors import reflash_motors
 
@@ -82,7 +81,6 @@ class MotorManager:
         check_collision: bool = False,
         kinematics_engine: str = "AnalyticalKinematics",
         headless: bool = False,
-        use_audio: bool = True,
         hardware_config_filepath: str | None = None,
         reflash_motors_on_start: bool = True,
     ) -> None:
@@ -96,7 +94,6 @@ class MotorManager:
             check_collision: If True, enable collision checking.
             kinematics_engine: Kinematics engine to use.
             headless: If True, run MuJoCo in headless mode (no GUI).
-            use_audio: If True, enable audio.
             hardware_config_filepath: Path to the hardware configuration YAML file.
             reflash_motors_on_start: If True, reflash motors on startup.
 
@@ -114,7 +111,6 @@ class MotorManager:
             "serialport": serialport,
             "scene": scene,
             "headless": headless,
-            "use_audio": use_audio,
             "check_collision": check_collision,
             "kinematics_engine": kinematics_engine,
             "hardware_config_filepath": hardware_config_filepath,
@@ -134,7 +130,6 @@ class MotorManager:
             check_collision=check_collision,
             kinematics_engine=kinematics_engine,
             headless=headless,
-            use_audio=use_audio,
             hardware_config_filepath=hardware_config_filepath,
             reflash_motors_on_start=reflash_motors_on_start,
         )
@@ -160,11 +155,12 @@ class MotorManager:
 
         self.logger.info("Motor controller started successfully.")
 
-    async def stop(self, goto_sleep: bool = True) -> None:
+    async def stop(self) -> None:
         """Stop the motor controller.
 
-        Args:
-            goto_sleep: If True, put the robot to sleep before stopping.
+        Note:
+            Call Daemon's motion_manager.goto_sleep() before this if you want
+            the robot to go to sleep with sound.
 
         """
         if self.motor_controller is None:
@@ -173,17 +169,6 @@ class MotorManager:
 
         self.logger.info("Stopping motor controller...")
         self.motor_controller.is_shutting_down = True
-
-        if goto_sleep:
-            try:
-                self.logger.info("Putting robot to sleep...")
-                self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
-                await self.motor_controller.goto_sleep()
-                self.motor_controller.set_motor_control_mode(MotorControlMode.Disabled)
-            except Exception as e:
-                self.logger.error(f"Error while putting robot to sleep: {e}")
-            except KeyboardInterrupt:
-                self.logger.warning("Sleep interrupted by user.")
 
         # Signal motor controller to stop and wait for thread
         self.motor_controller.should_stop.set()
@@ -199,25 +184,6 @@ class MotorManager:
         self._motor_controller_thread = None
 
         self.logger.info("Motor controller stopped.")
-
-    async def wake_up(self) -> None:
-        """Wake up the robot (enable motors and move to initial position)."""
-        if self.motor_controller is None:
-            raise RuntimeError("Motor controller not running")
-
-        self.logger.info("Waking up robot...")
-        self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
-        await self.motor_controller.wake_up()
-
-    async def goto_sleep(self) -> None:
-        """Put the robot to sleep (move to sleep position and disable motors)."""
-        if self.motor_controller is None:
-            raise RuntimeError("Motor controller not running")
-
-        self.logger.info("Putting robot to sleep...")
-        self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
-        await self.motor_controller.goto_sleep()
-        self.motor_controller.set_motor_control_mode(MotorControlMode.Disabled)
 
     def status(self) -> MotorManagerStatus:
         """Get the current status of the motor manager."""
@@ -240,7 +206,6 @@ class MotorManager:
         check_collision: bool,
         kinematics_engine: str,
         headless: bool,
-        use_audio: bool,
         hardware_config_filepath: str | None = None,
         reflash_motors_on_start: bool = True,
     ) -> MotorController:
@@ -254,7 +219,6 @@ class MotorManager:
             check_collision: Enable collision checking.
             kinematics_engine: Kinematics engine to use.
             headless: Run MuJoCo without GUI.
-            use_audio: Enable audio.
             hardware_config_filepath: Path to hardware config.
             reflash_motors_on_start: Reflash motors on startup.
 
@@ -269,7 +233,6 @@ class MotorManager:
             return MockupController(
                 check_collision=check_collision,
                 kinematics_engine=kinematics_engine,
-                use_audio=use_audio,
             )
         elif sim:
             return MujocoController(
@@ -277,7 +240,6 @@ class MotorManager:
                 check_collision=check_collision,
                 kinematics_engine=kinematics_engine,
                 headless=headless,
-                use_audio=use_audio,
             )
         else:
             # Real robot motor controller
@@ -312,7 +274,6 @@ class MotorManager:
                 log_level=self.log_level,
                 check_collision=check_collision,
                 kinematics_engine=kinematics_engine,
-                use_audio=use_audio,
                 wireless_version=self.wireless_version,
                 hardware_config_filepath=hardware_config_filepath,
             )

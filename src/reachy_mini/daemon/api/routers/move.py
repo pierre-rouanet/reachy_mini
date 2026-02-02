@@ -18,10 +18,15 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from huggingface_hub.errors import RepositoryNotFoundError
 from pydantic import BaseModel
 
+from reachy_mini.motion.manager import MotionManager
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.motor_controller.abstract import MotorController
 
-from ..dependencies import get_motor_controller, ws_get_motor_controller
+from ..dependencies import (
+    get_motion_manager,
+    get_motor_controller,
+    ws_get_motor_controller,
+)
 from ..models import AnyPose, FullBodyTarget
 
 move_tasks: dict[UUID, asyncio.Task[None]] = {}
@@ -147,11 +152,11 @@ async def get_running_moves() -> list[MoveUUID]:
 
 @router.post("/goto")
 async def goto(
-    goto_req: GotoModelRequest, motor_controller: MotorController = Depends(get_motor_controller)
+    goto_req: GotoModelRequest, motion_manager: MotionManager = Depends(get_motion_manager)
 ) -> MoveUUID:
     """Request a movement to a specific target."""
     return create_move_task(
-        motor_controller.goto_target(
+        motion_manager.goto_target(
             head=goto_req.head_pose.to_pose_array() if goto_req.head_pose else None,
             antennas=np.array(goto_req.antennas) if goto_req.antennas else None,
             body_yaw=goto_req.body_yaw,
@@ -161,15 +166,15 @@ async def goto(
 
 
 @router.post("/play/wake_up")
-async def play_wake_up(motor_controller: MotorController = Depends(get_motor_controller)) -> MoveUUID:
+async def play_wake_up(motion_manager: MotionManager = Depends(get_motion_manager)) -> MoveUUID:
     """Request the robot to wake up."""
-    return create_move_task(motor_controller.wake_up())
+    return create_move_task(motion_manager.wake_up())
 
 
 @router.post("/play/goto_sleep")
-async def play_goto_sleep(motor_controller: MotorController = Depends(get_motor_controller)) -> MoveUUID:
+async def play_goto_sleep(motion_manager: MotionManager = Depends(get_motion_manager)) -> MoveUUID:
     """Request the robot to go to sleep."""
-    return create_move_task(motor_controller.goto_sleep())
+    return create_move_task(motion_manager.goto_sleep())
 
 
 @router.get("/recorded-move-datasets/list/{dataset_name:path}")
@@ -189,7 +194,7 @@ async def list_recorded_move_dataset(
 async def play_recorded_move_dataset(
     dataset_name: str,
     move_name: str,
-    motor_controller: MotorController = Depends(get_motor_controller),
+    motion_manager: MotionManager = Depends(get_motion_manager),
 ) -> MoveUUID:
     """Request the robot to play a predefined recorded move from a dataset."""
     try:
@@ -200,7 +205,7 @@ async def play_recorded_move_dataset(
         move = recorded_moves.get(move_name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return create_move_task(motor_controller.play_move(move))
+    return create_move_task(motion_manager.play_move(move))
 
 
 @router.post("/stop")

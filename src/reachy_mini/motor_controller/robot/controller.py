@@ -31,7 +31,6 @@ class RobotController(MotorController):
         check_collision: bool = False,
         kinematics_engine: str = "AnalyticalKinematics",
         hardware_error_check_frequency: float = 1.0,
-        use_audio: bool = True,
         wireless_version: bool = False,
         hardware_config_filepath: str | None = None,
     ):
@@ -43,7 +42,6 @@ class RobotController(MotorController):
             check_collision (bool): If True, enable collision checking. Default is False.
             kinematics_engine (str): Kinematics engine to use. Defaults to "AnalyticalKinematics".
             hardware_error_check_frequency (float): Frequency in seconds to check for hardware errors. Default is 1.0.
-            use_audio (bool): If True, use audio. Default is True.
             wireless_version (bool): If True, indicates that the wireless version of Reachy Mini is used. Default is False.
             hardware_config_filepath (str | None): Path to the hardware configuration YAML file. Default is None.
 
@@ -51,7 +49,6 @@ class RobotController(MotorController):
         super().__init__(
             check_collision=check_collision,
             kinematics_engine=kinematics_engine,
-            use_audio=use_audio,
             wireless_version=wireless_version,
         )
 

@@ -26,20 +26,17 @@ class MockupController(MotorController):
         self,
         check_collision: bool = False,
         kinematics_engine: str = "AnalyticalKinematics",
-        use_audio: bool = True,
     ) -> None:
         """Initialize the MockupController.
 
         Args:
             check_collision: If True, enable collision checking. Default is False.
             kinematics_engine: Kinematics engine to use. Defaults to "AnalyticalKinematics".
-            use_audio: If True, use audio. Default is True.
 
         """
         super().__init__(
             check_collision=check_collision,
             kinematics_engine=kinematics_engine,
-            use_audio=use_audio,
         )
 
         from reachy_mini.reachy_mini import (

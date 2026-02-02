@@ -11,9 +11,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
+from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.motor_controller.abstract import MotorController
 
-from ..dependencies import get_motor_controller, ws_get_motor_controller
+from ..dependencies import get_audio, get_motor_controller, ws_get_motor_controller
 from ..models import AnyPose, DoAInfo, FullState, as_any_pose
 
 router = APIRouter(prefix="/state")
@@ -57,16 +58,16 @@ async def get_antenna_joint_positions(
 
 @router.get("/doa")
 async def get_doa(
-    motor_controller: MotorController = Depends(get_motor_controller),
+    audio: MediaManager | None = Depends(get_audio),
 ) -> DoAInfo | None:
     """Get the Direction of Arrival from the microphone array.
 
     Returns the angle in radians (0=left, π/2=front, π=right) and speech detection status.
     Returns None if the audio device is not available.
     """
-    if not motor_controller.audio:
+    if not audio:
         return None
-    result = motor_controller.audio.get_DoA()
+    result = audio.get_DoA()
     if result is None:
         return None
     return DoAInfo(angle=result[0], speech_detected=result[1])
@@ -87,6 +88,7 @@ async def get_full_state(
     with_doa: bool = False,
     use_pose_matrix: bool = False,
     motor_controller: MotorController = Depends(get_motor_controller),
+    audio: MediaManager | None = Depends(get_audio),
 ) -> FullState:
     """Get the full robot state, with optional fields."""
     result: dict[str, Any] = {}
@@ -119,8 +121,8 @@ async def get_full_state(
             result["passive_joints"] = list(joints.values())
         else:
             result["passive_joints"] = None
-    if with_doa and motor_controller.audio:
-        doa_result = motor_controller.audio.get_DoA()
+    if with_doa and audio:
+        doa_result = audio.get_DoA()
         if doa_result:
             result["doa"] = DoAInfo(angle=doa_result[0], speech_detected=doa_result[1])
 

@@ -33,7 +33,7 @@ async def start_daemon(
         with busy_lock:
             await daemon.start()
             if wake_up and daemon._motor_manager.ready:
-                await daemon._motor_manager.wake_up()
+                await daemon._motion_manager.wake_up()
 
     job_id = bg_job_register.run_command("daemon-start", start)
     return {"job_id": job_id}

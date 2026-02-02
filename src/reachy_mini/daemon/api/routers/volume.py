@@ -15,8 +15,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from reachy_mini.daemon.api.dependencies import get_motor_controller
-from reachy_mini.motor_controller.abstract import MotorController
+from reachy_mini.daemon.api.dependencies import get_audio
+from reachy_mini.media.media_manager import MediaManager
 
 router = APIRouter(prefix="/volume")
 logger = logging.getLogger(__name__)
@@ -216,7 +216,7 @@ async def get_volume() -> VolumeResponse:
 @router.post("/set")
 async def set_volume(
     volume_req: VolumeRequest,
-    motor_controller: MotorController = Depends(get_motor_controller),
+    audio: MediaManager | None = Depends(get_audio),
 ) -> VolumeResponse:
     """Set the volume level and play a test sound."""
     system = get_current_platform()
@@ -238,9 +238,9 @@ async def set_volume(
 
     # Play test sound
     test_sound = "impatient1.wav"
-    if motor_controller.audio:
+    if audio:
         try:
-            motor_controller.audio.play_sound(test_sound)
+            audio.play_sound(test_sound)
         except Exception as e:
             msg = str(e).lower()
             if "device unavailable" in msg or "-9985" in msg:
@@ -257,15 +257,15 @@ async def set_volume(
 
 
 @router.post("/test-sound")
-async def play_test_sound(motor_controller: MotorController = Depends(get_motor_controller)) -> TestSoundResponse:
+async def play_test_sound(audio: MediaManager | None = Depends(get_audio)) -> TestSoundResponse:
     """Play a test sound."""
     test_sound = "impatient1.wav"
 
-    if not motor_controller.audio:
+    if not audio:
         raise HTTPException(status_code=503, detail="Audio device not available")
 
     try:
-        motor_controller.audio.play_sound(test_sound)
+        audio.play_sound(test_sound)
         return TestSoundResponse(status="ok", message="Test sound played")
     except Exception as e:
         msg = str(e).lower()

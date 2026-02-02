@@ -4,6 +4,7 @@ This module provides the main Daemon class that orchestrates all components:
 - MotorManager: Motor control lifecycle (simulation or real hardware)
 - InterfaceManager: Communication interfaces (FastAPI, WebRTC)
 - AppManager: User application lifecycle
+- MotionManager: Motion with synchronized audio (wake_up, goto_sleep, play_move)
 
 The Daemon provides a simple high-level API: start(), stop(), run4ever(), status().
 """
@@ -20,7 +21,12 @@ from reachy_mini.apps.manager import AppManager
 from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.interface_manager import InterfaceManager
 from reachy_mini.daemon.utils import get_ip_address
-from reachy_mini.motor_controller.abstract import MotorControllerStatus
+from reachy_mini.media.media_manager import MediaBackend, MediaManager
+from reachy_mini.motion.manager import MotionManager
+from reachy_mini.motor_controller.abstract import (
+    MotorControllerStatus,
+    MotorControlMode,
+)
 from reachy_mini.motor_controller.manager import MotorManager
 
 if TYPE_CHECKING:
@@ -111,6 +117,10 @@ class Daemon:
             log_level=self._config.log_level.value,
             wireless_version=self._config.wireless_version,
         )
+        self._media_manager: Optional[MediaManager] = None
+        self._motion_manager = MotionManager(
+            log_level=self._config.log_level.value,
+        )
         self._app_manager = AppManager(
             wireless_version=self._config.wireless_version,
             desktop_app_daemon=self._config.desktop_app_daemon,
@@ -156,6 +166,16 @@ class Daemon:
         """Get the current configuration."""
         return self._config
 
+    @property
+    def motion_manager(self) -> MotionManager:
+        """Get the MotionManager instance."""
+        return self._motion_manager
+
+    @property
+    def audio(self) -> Optional[MediaManager]:
+        """Get the MediaManager instance for audio."""
+        return self._media_manager
+
     async def start(self) -> DaemonState:
         """Start the Reachy Mini daemon.
 
@@ -193,7 +213,19 @@ class Daemon:
         self.logger.info("Starting Reachy Mini daemon...")
         self._status.state = DaemonState.STARTING
 
-        # 1. Start the motor controller
+        # 1. Start the media manager (if audio enabled)
+        if self._config.use_audio:
+            try:
+                self.logger.info("Initializing daemon audio backend.")
+                self._media_manager = MediaManager(
+                    backend=MediaBackend.GSTREAMER_NO_VIDEO,
+                    log_level=self._config.log_level.value,
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize audio: {e}")
+                # Audio failure is not critical, continue without it
+
+        # 2. Start the motor controller
         motor_started = False
         try:
             await self._motor_manager.start(
@@ -204,7 +236,6 @@ class Daemon:
                 check_collision=self._config.check_collision,
                 kinematics_engine=self._config.kinematics_engine.value,
                 headless=self._config.headless,
-                use_audio=self._config.use_audio,
                 hardware_config_filepath=self._config.hardware_config_filepath,
             )
             motor_started = True
@@ -214,10 +245,14 @@ class Daemon:
             self._status.error = str(e)
             # Continue to start FastAPI so status can be queried
 
-        # 2. Wake up if requested (only if motor controller started successfully)
+        # 3. Wire up motion manager with motor controller and audio
+        self._motion_manager.set_motor_controller(self._motor_manager.motor_controller)
+        self._motion_manager.set_audio(self._media_manager)
+
+        # 4. Wake up if requested (only if motor controller started successfully)
         if motor_started and self._config.wake_up_on_start:
             try:
-                await self._motor_manager.wake_up()
+                await self._motion_manager.wake_up()
             except Exception as e:
                 self.logger.error(f"Error while waking up Reachy Mini: {e}")
                 self._status.state = DaemonState.ERROR
@@ -226,11 +261,11 @@ class Daemon:
                 self.logger.warning("Wake up interrupted by user.")
                 self._status.state = DaemonState.STOPPING
 
-        # 3. Start WebRTC interface (if enabled and motor controller started)
+        # 5. Start WebRTC interface (if enabled and motor controller started)
         if motor_started:
             await self._interface_manager.start_webrtc()
 
-        # 4. Start FastAPI server (always start so status can be queried)
+        # 6. Start FastAPI server (always start so status can be queried)
         await self._interface_manager.start_server(self._config)
 
         if motor_started and self._status.state != DaemonState.ERROR:
@@ -270,11 +305,29 @@ class Daemon:
             # 1. Pause WebRTC (keep signaling server running for restart)
             self._interface_manager.pause_webrtc()
 
-            # 2. Stop the motor controller (if running)
-            if self._motor_manager.ready:
-                await self._motor_manager.stop(goto_sleep=goto_sleep_on_stop)
+            # 2. Go to sleep if requested (uses motion manager for sound)
+            if goto_sleep_on_stop and self._motor_manager.ready:
+                assert self.motor_controller is not None  # Guaranteed by _motor_manager.ready
+                try:
+                    self.logger.info("Putting robot to sleep...")
+                    self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
+                    await self._motion_manager.goto_sleep()
+                    self.motor_controller.set_motor_control_mode(MotorControlMode.Disabled)
+                except Exception as e:
+                    self.logger.error(f"Error while putting robot to sleep: {e}")
+                except KeyboardInterrupt:
+                    self.logger.warning("Sleep interrupted by user.")
 
-            # 3. Stop FastAPI server
+            # 3. Stop the motor controller (if running)
+            if self._motor_manager.ready:
+                await self._motor_manager.stop()
+
+            # 4. Stop media manager
+            if self._media_manager is not None:
+                self._media_manager.close()
+                self._media_manager = None
+
+            # 4. Stop FastAPI server
             await self._interface_manager.stop_server()
 
             self.logger.info("Daemon stopped successfully.")

@@ -44,7 +44,6 @@ class MujocoController(MotorController):
         check_collision: bool = False,
         kinematics_engine: str = "AnalyticalKinematics",
         headless: bool = False,
-        use_audio: bool = False,
     ) -> None:
         """Initialize the MujocoController with a specified scene.
 
@@ -53,13 +52,11 @@ class MujocoController(MotorController):
             check_collision (bool): If True, enable collision checking. Default is False.
             kinematics_engine (str): Kinematics engine to use. Defaults to "AnalyticalKinematics".
             headless (bool): If True, run Mujoco in headless mode (no GUI). Default is False.
-            use_audio (bool): If True, use audio. Default is False.
 
         """
         super().__init__(
             check_collision=check_collision,
             kinematics_engine=kinematics_engine,
-            use_audio=use_audio,
         )
 
         self.headless = headless

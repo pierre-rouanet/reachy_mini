@@ -2,6 +2,8 @@
 
 from fastapi import HTTPException, Request, WebSocket
 
+from reachy_mini.media.media_manager import MediaManager
+from reachy_mini.motion.manager import MotionManager
 from reachy_mini.motor_controller.abstract import MotorController
 
 from ...apps.manager import AppManager
@@ -23,6 +25,19 @@ def get_motor_controller(request: Request) -> MotorController:
 
     assert isinstance(motor_controller, MotorController)
     return motor_controller
+
+
+def get_motion_manager(request: Request) -> MotionManager:
+    """Get the motion manager as request dependency."""
+    daemon = get_daemon(request)
+    if daemon.motor_controller is None or not daemon.motor_controller.ready.is_set():
+        raise HTTPException(status_code=503, detail="Motor controller not running")
+    return daemon.motion_manager
+
+
+def get_audio(request: Request) -> MediaManager | None:
+    """Get the audio manager as request dependency (may be None if audio disabled)."""
+    return get_daemon(request).audio
 
 
 def get_app_manager(request: Request) -> "AppManager":
