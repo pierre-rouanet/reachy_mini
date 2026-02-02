@@ -17,7 +17,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, Optional
 
 from reachy_mini.apps.manager import AppManager
-from reachy_mini.daemon.args import DaemonArgs, KinematicsEngine
+from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.backend.abstract import BackendStatus
 from reachy_mini.daemon.backend_manager import BackendManager
 from reachy_mini.daemon.interface_manager import InterfaceManager
@@ -59,75 +59,30 @@ class Daemon:
 
     Orchestrates BackendManager (robot control), InterfaceManager (HTTP/WebRTC),
     and AppManager (user apps) to provide a unified daemon interface.
+
+    Can be used as an async context manager:
+        async with Daemon(DaemonArgs(sim=True, headless=True)) as daemon:
+            # daemon is running
+        # automatically stopped
+
+    Or manually:
+        daemon = Daemon()
+        await daemon.start(DaemonArgs(sim=True))
+        # ...
+        await daemon.stop()
     """
 
-    def __init__(
-        self,
-        log_level: str = "INFO",
-        robot_name: str = "reachy_mini",
-        wireless_version: bool = False,
-        desktop_app_daemon: bool = False,
-        # Context manager start parameters (used by __aenter__)
-        sim: bool = False,
-        mockup_sim: bool = False,
-        serialport: str = "auto",
-        scene: str = "empty",
-        localhost_only: bool = True,
-        wake_up_on_start: bool = True,
-        check_collision: bool = False,
-        kinematics_engine: KinematicsEngine = KinematicsEngine.ANALYTICAL,
-        headless: bool = False,
-        use_audio: bool = True,
-        hardware_config_filepath: str | None = None,
-        fastapi_host: str = "127.0.0.1",
-        fastapi_port: int = 8000,
-        goto_sleep_on_stop: bool = True,
-    ) -> None:
+    def __init__(self, config: DaemonArgs | None = None) -> None:
         """Initialize the Reachy Mini daemon.
 
         Args:
-            log_level: Logging level for all components.
-            robot_name: Name of the robot (for topic namespacing).
-            wireless_version: Whether running on wireless Reachy Mini hardware.
-            desktop_app_daemon: Whether running as desktop app daemon.
-            sim: If True, run in simulation mode using MuJoCo (for context manager).
-            mockup_sim: If True, run in lightweight simulation mode (for context manager).
-            serialport: Serial port for real motors (for context manager).
-            scene: Name of the scene to load (for context manager).
-            localhost_only: If True, restrict server to localhost only (for context manager).
-            wake_up_on_start: If True, wake up the robot on start (for context manager).
-            check_collision: If True, enable collision checking (for context manager).
-            kinematics_engine: Kinematics engine to use (for context manager).
-            headless: If True, run MuJoCo in headless mode (for context manager).
-            use_audio: If True, enable audio (for context manager).
-            hardware_config_filepath: Path to hardware config YAML (for context manager).
-            fastapi_host: Host address for FastAPI server (for context manager).
-            fastapi_port: Port for FastAPI server (for context manager).
-            goto_sleep_on_stop: If True, put robot to sleep on stop (for context manager).
+            config: Configuration for the daemon. If None, uses defaults.
 
         """
-        # Store context manager parameters
-        self._cm_sim = sim
-        self._cm_mockup_sim = mockup_sim
-        self._cm_serialport = serialport
-        self._cm_scene = scene
-        self._cm_localhost_only = localhost_only
-        self._cm_wake_up_on_start = wake_up_on_start
-        self._cm_check_collision = check_collision
-        self._cm_kinematics_engine = kinematics_engine
-        self._cm_headless = headless
-        self._cm_use_audio = use_audio
-        self._cm_hardware_config_filepath = hardware_config_filepath
-        self._cm_fastapi_host = fastapi_host
-        self._cm_fastapi_port = fastapi_port
-        self._cm_goto_sleep_on_stop = goto_sleep_on_stop
-        self.log_level = log_level
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(self.log_level)
+        self._config = config if config is not None else DaemonArgs()
 
-        self.robot_name = robot_name
-        self.wireless_version = wireless_version
-        self.desktop_app_daemon = desktop_app_daemon
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(self._config.log_level.value)
 
         # Get package version
         try:
@@ -139,10 +94,10 @@ class Daemon:
 
         # Initialize status
         self._status = DaemonStatus(
-            robot_name=robot_name,
+            robot_name=self._config.robot_name,
             state=DaemonState.NOT_INITIALIZED,
-            wireless_version=wireless_version,
-            desktop_app_daemon=desktop_app_daemon,
+            wireless_version=self._config.wireless_version,
+            desktop_app_daemon=self._config.desktop_app_daemon,
             simulation_enabled=None,
             mockup_sim_enabled=None,
             backend_status=None,
@@ -153,45 +108,28 @@ class Daemon:
 
         # Create managers
         self._backend_manager = BackendManager(
-            log_level=log_level,
-            wireless_version=wireless_version,
+            log_level=self._config.log_level.value,
+            wireless_version=self._config.wireless_version,
         )
         self._app_manager = AppManager(
-            wireless_version=wireless_version,
-            desktop_app_daemon=desktop_app_daemon,
+            wireless_version=self._config.wireless_version,
+            desktop_app_daemon=self._config.desktop_app_daemon,
             daemon=self,
         )
         # InterfaceManager created after app_manager since it needs access to daemon
         self._interface_manager = InterfaceManager(
             daemon=self,
-            log_level=log_level,
-            wireless_version=wireless_version,
+            log_level=self._config.log_level.value,
+            wireless_version=self._config.wireless_version,
         )
-
-        # Store start params for restart
-        self._start_params: dict[str, Any] = {}
 
     def __del__(self) -> None:
         """Destructor to ensure proper cleanup."""
         self.logger.debug("Cleaning up Daemon resources...")
 
     async def __aenter__(self) -> "Daemon":
-        """Enter context manager: start the daemon."""
-        await self.start(
-            sim=self._cm_sim,
-            mockup_sim=self._cm_mockup_sim,
-            serialport=self._cm_serialport,
-            scene=self._cm_scene,
-            localhost_only=self._cm_localhost_only,
-            wake_up_on_start=self._cm_wake_up_on_start,
-            check_collision=self._cm_check_collision,
-            kinematics_engine=self._cm_kinematics_engine,
-            headless=self._cm_headless,
-            use_audio=self._cm_use_audio,
-            hardware_config_filepath=self._cm_hardware_config_filepath,
-            fastapi_host=self._cm_fastapi_host,
-            fastapi_port=self._cm_fastapi_port,
-        )
+        """Enter context manager: start the daemon with stored config."""
+        await self.start()
         return self
 
     async def __aexit__(
@@ -201,7 +139,7 @@ class Daemon:
         exc_tb: Any,
     ) -> None:
         """Exit context manager: stop the daemon."""
-        await self.stop(goto_sleep_on_stop=self._cm_goto_sleep_on_stop)
+        await self.stop()
 
     @property
     def backend(self) -> Optional["Backend"]:
@@ -213,38 +151,13 @@ class Daemon:
         """Get the AppManager instance."""
         return self._app_manager
 
-    async def start(
-        self,
-        sim: bool = False,
-        mockup_sim: bool = False,
-        serialport: str = "auto",
-        scene: str = "empty",
-        localhost_only: bool = True,
-        wake_up_on_start: bool = True,
-        check_collision: bool = False,
-        kinematics_engine: KinematicsEngine = KinematicsEngine.ANALYTICAL,
-        headless: bool = False,
-        use_audio: bool = True,
-        hardware_config_filepath: str | None = None,
-        fastapi_host: str = "127.0.0.1",
-        fastapi_port: int = 8000,
-    ) -> DaemonState:
-        """Start the Reachy Mini daemon.
+    @property
+    def config(self) -> DaemonArgs:
+        """Get the current configuration."""
+        return self._config
 
-        Args:
-            sim: If True, run in simulation mode using MuJoCo.
-            mockup_sim: If True, run in lightweight simulation mode (no MuJoCo).
-            serialport: Serial port for real motors. "auto" to auto-detect.
-            scene: Name of the scene to load in simulation mode.
-            localhost_only: If True, restrict server to localhost only.
-            wake_up_on_start: If True, wake up the robot on start.
-            check_collision: If True, enable collision checking.
-            kinematics_engine: Kinematics engine to use.
-            headless: If True, run MuJoCo in headless mode (no GUI).
-            use_audio: If True, enable audio.
-            hardware_config_filepath: Path to hardware configuration YAML.
-            fastapi_host: Host address for FastAPI server.
-            fastapi_port: Port for FastAPI server.
+    async def start(self) -> DaemonState:
+        """Start the Reachy Mini daemon.
 
         Returns:
             DaemonState: The current state after attempting to start.
@@ -254,35 +167,28 @@ class Daemon:
             self.logger.warning("Daemon is already running.")
             return self._status.state
 
+        # Handle localhost_only default based on wireless_version
+        localhost_only = self._config.localhost_only
+        if localhost_only is None:
+            localhost_only = not self._config.wireless_version
+
         self.logger.info(
-            f"Daemon start parameters: sim={sim}, mockup_sim={mockup_sim}, "
-            f"serialport={serialport}, scene={scene}, localhost_only={localhost_only}, "
-            f"wake_up_on_start={wake_up_on_start}, check_collision={check_collision}, "
-            f"kinematics_engine={kinematics_engine}, headless={headless}, "
-            f"hardware_config_filepath={hardware_config_filepath}"
+            f"Daemon start parameters: sim={self._config.sim}, "
+            f"mockup_sim={self._config.mockup_sim}, "
+            f"serialport={self._config.serialport}, scene={self._config.scene}, "
+            f"localhost_only={localhost_only}, "
+            f"wake_up_on_start={self._config.wake_up_on_start}, "
+            f"check_collision={self._config.check_collision}, "
+            f"kinematics_engine={self._config.kinematics_engine}, "
+            f"headless={self._config.headless}, "
+            f"hardware_config_filepath={self._config.hardware_config_filepath}"
         )
 
         # Update status
-        self._status.simulation_enabled = sim
-        self._status.mockup_sim_enabled = mockup_sim
+        self._status.simulation_enabled = self._config.sim
+        self._status.mockup_sim_enabled = self._config.mockup_sim
         if not localhost_only:
             self._status.wlan_ip = get_ip_address()
-
-        # Store params for restart
-        self._start_params = {
-            "sim": sim,
-            "mockup_sim": mockup_sim,
-            "serialport": serialport,
-            "scene": scene,
-            "headless": headless,
-            "use_audio": use_audio,
-            "localhost_only": localhost_only,
-            "check_collision": check_collision,
-            "kinematics_engine": kinematics_engine,
-            "hardware_config_filepath": hardware_config_filepath,
-            "fastapi_host": fastapi_host,
-            "fastapi_port": fastapi_port,
-        }
 
         self.logger.info("Starting Reachy Mini daemon...")
         self._status.state = DaemonState.STARTING
@@ -291,15 +197,15 @@ class Daemon:
         backend_started = False
         try:
             await self._backend_manager.start(
-                sim=sim,
-                mockup_sim=mockup_sim,
-                serialport=serialport,
-                scene=scene,
-                check_collision=check_collision,
-                kinematics_engine=kinematics_engine.value,
-                headless=headless,
-                use_audio=use_audio,
-                hardware_config_filepath=hardware_config_filepath,
+                sim=self._config.sim,
+                mockup_sim=self._config.mockup_sim,
+                serialport=self._config.serialport,
+                scene=self._config.scene,
+                check_collision=self._config.check_collision,
+                kinematics_engine=self._config.kinematics_engine.value,
+                headless=self._config.headless,
+                use_audio=self._config.use_audio,
+                hardware_config_filepath=self._config.hardware_config_filepath,
             )
             backend_started = True
         except Exception as e:
@@ -309,7 +215,7 @@ class Daemon:
             # Continue to start FastAPI so status can be queried
 
         # 2. Wake up if requested (only if backend started successfully)
-        if backend_started and wake_up_on_start:
+        if backend_started and self._config.wake_up_on_start:
             try:
                 await self._backend_manager.wake_up()
             except Exception as e:
@@ -325,20 +231,7 @@ class Daemon:
             await self._interface_manager.start_webrtc()
 
         # 4. Start FastAPI server (always start so status can be queried)
-        server_args = DaemonArgs(
-            fastapi_host=fastapi_host,
-            fastapi_port=fastapi_port,
-            # Fill in other fields from start params
-            sim=sim,
-            mockup_sim=mockup_sim,
-            serialport=serialport,
-            scene=scene,
-            headless=headless,
-            use_audio=use_audio,
-            check_collision=check_collision,
-            hardware_config_filepath=hardware_config_filepath,
-        )
-        await self._interface_manager.start_server(server_args)
+        await self._interface_manager.start_server(self._config)
 
         if backend_started and self._status.state != DaemonState.ERROR:
             self.logger.info("Daemon started successfully.")
@@ -348,11 +241,12 @@ class Daemon:
 
         return self._status.state
 
-    async def stop(self, goto_sleep_on_stop: bool = True) -> DaemonState:
+    async def stop(self, goto_sleep_on_stop: bool | None = None) -> DaemonState:
         """Stop the Reachy Mini daemon.
 
         Args:
             goto_sleep_on_stop: If True, put the robot to sleep before stopping.
+                If None, uses the value from config.
 
         Returns:
             DaemonState: The current state after attempting to stop.
@@ -361,6 +255,10 @@ class Daemon:
         if self._status.state == DaemonState.STOPPED:
             self.logger.warning("Daemon is already stopped.")
             return self._status.state
+
+        # Use config value if not specified
+        if goto_sleep_on_stop is None:
+            goto_sleep_on_stop = self._config.goto_sleep_on_stop
 
         try:
             if self._status.state in (DaemonState.STOPPING, DaemonState.ERROR):
@@ -391,30 +289,11 @@ class Daemon:
 
         return self._status.state
 
-    async def restart(
-        self,
-        sim: Optional[bool] = None,
-        mockup_sim: Optional[bool] = None,
-        serialport: Optional[str] = None,
-        scene: Optional[str] = None,
-        headless: Optional[bool] = None,
-        use_audio: Optional[bool] = None,
-        localhost_only: Optional[bool] = None,
-        wake_up_on_start: Optional[bool] = None,
-        goto_sleep_on_stop: Optional[bool] = None,
-    ) -> DaemonState:
+    async def restart(self, config: DaemonArgs | None = None) -> DaemonState:
         """Restart the Reachy Mini daemon.
 
         Args:
-            sim: If True, run in simulation mode. None uses previous value.
-            mockup_sim: If True, run mockup sim. None uses previous value.
-            serialport: Serial port. None uses previous value.
-            scene: Scene to load. None uses previous value.
-            headless: Run headless. None uses previous value.
-            use_audio: Enable audio. None uses previous value.
-            localhost_only: Localhost only. None uses previous value.
-            wake_up_on_start: Wake up on start. None means False.
-            goto_sleep_on_stop: Go to sleep on stop. None means False.
+            config: Optional new configuration. If None, reuses current config.
 
         Returns:
             DaemonState: The current state after attempting to restart.
@@ -427,47 +306,13 @@ class Daemon:
         if self._status.state in (DaemonState.RUNNING, DaemonState.ERROR):
             self.logger.info("Restarting Reachy Mini daemon...")
 
-            await self.stop(
-                goto_sleep_on_stop=goto_sleep_on_stop
-                if goto_sleep_on_stop is not None
-                else False
-            )
+            # Use goto_sleep=False during restart to avoid unnecessary movement
+            await self.stop(goto_sleep_on_stop=False)
 
-            params = {
-                "sim": sim if sim is not None else self._start_params.get("sim", False),
-                "mockup_sim": mockup_sim
-                if mockup_sim is not None
-                else self._start_params.get("mockup_sim", False),
-                "serialport": serialport
-                if serialport is not None
-                else self._start_params.get("serialport", "auto"),
-                "scene": scene
-                if scene is not None
-                else self._start_params.get("scene", "empty"),
-                "headless": headless
-                if headless is not None
-                else self._start_params.get("headless", False),
-                "use_audio": use_audio
-                if use_audio is not None
-                else self._start_params.get("use_audio", True),
-                "localhost_only": localhost_only
-                if localhost_only is not None
-                else self._start_params.get("localhost_only", True),
-                "wake_up_on_start": wake_up_on_start
-                if wake_up_on_start is not None
-                else False,
-                "check_collision": self._start_params.get("check_collision", False),
-                "kinematics_engine": self._start_params.get(
-                    "kinematics_engine", KinematicsEngine.ANALYTICAL
-                ),
-                "hardware_config_filepath": self._start_params.get(
-                    "hardware_config_filepath"
-                ),
-                "fastapi_host": self._start_params.get("fastapi_host", "127.0.0.1"),
-                "fastapi_port": self._start_params.get("fastapi_port", 8000),
-            }
+            if config is not None:
+                self._config = config
 
-            return await self.start(**params)
+            return await self.start()
 
         raise NotImplementedError(
             "Restarting is only supported when daemon is in RUNNING or ERROR state."
@@ -489,38 +334,57 @@ class Daemon:
 
         return self._status
 
-    async def run4ever(self, args: DaemonArgs) -> None:
+    async def run4ever(self) -> None:
         """Run the Reachy Mini daemon indefinitely.
 
         Starts the daemon (backend + FastAPI server) and blocks until shutdown.
         This is the main entry point when running from main.py.
 
-        Args:
-            args: Configuration arguments (DaemonArgs dataclass).
-
+        Respects config options:
+        - autostart: If False, only starts FastAPI server (backend via API)
+        - preload_datasets: Pre-download recorded move datasets at startup
+        - dataset_update_interval_hours: Interval for background dataset updates
         """
-        # Determine localhost_only from args
-        localhost_only = args.localhost_only
-        if localhost_only is None:
-            localhost_only = not self.wireless_version
+        from reachy_mini.motion.recorded_move import preload_default_datasets
 
-        await self.start(
-            sim=args.sim,
-            mockup_sim=args.mockup_sim,
-            serialport=args.serialport,
-            scene=args.scene,
-            localhost_only=localhost_only,
-            wake_up_on_start=args.wake_up_on_start,
-            check_collision=args.check_collision,
-            kinematics_engine=args.kinematics_engine,
-            headless=args.headless,
-            use_audio=args.use_audio,
-            hardware_config_filepath=args.hardware_config_filepath,
-            fastapi_host=args.fastapi_host,
-            fastapi_port=args.fastapi_port,
-        )
+        dataset_updater_task: asyncio.Task[None] | None = None
 
-        if self._status.state == DaemonState.RUNNING:
+        # Pre-download recorded move datasets in background
+        if self._config.preload_datasets:
+            def preload_with_logging() -> None:
+                try:
+                    preload_default_datasets()
+                    self.logger.info("Recorded move datasets pre-loaded successfully")
+                except Exception as e:
+                    self.logger.warning(f"Failed to pre-load some datasets: {e}")
+
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, preload_with_logging)
+
+        # Start periodic dataset updater if enabled
+        if self._config.dataset_update_interval_hours > 0:
+            async def dataset_updater(interval_hours: float) -> None:
+                interval_seconds = interval_hours * 3600
+                while True:
+                    try:
+                        await asyncio.sleep(interval_seconds)
+                        self.logger.info("Checking for dataset updates...")
+                        preload_default_datasets()
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        self.logger.warning(f"Error in dataset updater: {e}")
+
+            dataset_updater_task = asyncio.create_task(
+                dataset_updater(self._config.dataset_update_interval_hours)
+            )
+            self.logger.info(
+                f"Dataset updater started (interval: {self._config.dataset_update_interval_hours}h)"
+            )
+
+        await self.start()
+
+        if self._status.state in (DaemonState.RUNNING, DaemonState.ERROR):
             # Set up shutdown event for signal handling
             shutdown_event = asyncio.Event()
 
@@ -554,4 +418,12 @@ class Daemon:
                 for sig in (signal.SIGINT, signal.SIGTERM):
                     loop.remove_signal_handler(sig)
 
-        await self.stop(goto_sleep_on_stop=args.goto_sleep_on_stop)
+                # Cancel dataset updater task
+                if dataset_updater_task is not None:
+                    dataset_updater_task.cancel()
+                    try:
+                        await dataset_updater_task
+                    except asyncio.CancelledError:
+                        pass
+
+        await self.stop()

@@ -4,13 +4,18 @@ import aiohttp
 import numpy as np
 import pytest
 
+from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.daemon import Daemon, DaemonState
 from reachy_mini.reachy_mini import ReachyMini
 
 
+# Common test config
+_TEST_CONFIG = DaemonArgs(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False)
+
+
 @pytest.mark.asyncio
 async def test_daemon_start_stop() -> None:
-    async with Daemon(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False):
+    async with Daemon(_TEST_CONFIG):
         pass
 
 
@@ -21,7 +26,7 @@ async def test_daemon_faulty_backend_fastapi_still_running() -> None:
     Also verifies that the port is properly released after stopping.
     """
     # Use real robot mode with invalid serial port to cause backend failure
-    daemon = Daemon(
+    faulty_config = DaemonArgs(
         sim=False,
         mockup_sim=False,
         serialport="/dev/nonexistent_port",
@@ -30,17 +35,11 @@ async def test_daemon_faulty_backend_fastapi_still_running() -> None:
         use_audio=False,
         goto_sleep_on_stop=False,
     )
+    daemon = Daemon(faulty_config)
 
     try:
         # Start should complete (FastAPI runs) but backend should fail
-        state = await daemon.start(
-            sim=False,
-            mockup_sim=False,
-            serialport="/dev/nonexistent_port",
-            headless=True,
-            wake_up_on_start=False,
-            use_audio=False,
-        )
+        state = await daemon.start()
 
         # Daemon should be in ERROR state due to backend failure
         assert state == DaemonState.ERROR
@@ -60,10 +59,10 @@ async def test_daemon_faulty_backend_fastapi_still_running() -> None:
                 assert status["backend_status"] is None  # Backend never started
 
     finally:
-        await daemon.stop(goto_sleep_on_stop=False)
+        await daemon.stop()
 
     # Verify the port is properly released by starting a new daemon on the same port
-    async with Daemon(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False):
+    async with Daemon(_TEST_CONFIG):
         async with aiohttp.ClientSession() as session:
             async with session.get("http://127.0.0.1:8000/api/daemon/status") as response:
                 assert response.status == 200
@@ -75,13 +74,13 @@ async def test_daemon_faulty_backend_fastapi_still_running() -> None:
 @pytest.mark.asyncio
 async def test_daemon_multiple_start_stop() -> None:
     for _ in range(3):
-        async with Daemon(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False):
+        async with Daemon(_TEST_CONFIG):
             pass
 
 
 @pytest.mark.asyncio
 async def test_daemon_client_disconnection() -> None:
-    async with Daemon(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False) as daemon:
+    async with Daemon(_TEST_CONFIG) as daemon:
         client_connected = asyncio.Event()
 
         async def simple_client() -> None:
@@ -97,14 +96,14 @@ async def test_daemon_client_disconnection() -> None:
 
         async def wait_for_client() -> None:
             await client_connected.wait()
-            await daemon.stop(goto_sleep_on_stop=False)
+            await daemon.stop()
 
         await asyncio.gather(simple_client(), wait_for_client())
 
 
 @pytest.mark.asyncio
 async def test_daemon_early_stop() -> None:
-    async with Daemon(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False) as daemon:
+    async with Daemon(_TEST_CONFIG) as daemon:
         client_connected = asyncio.Event()
         daemon_stopped = asyncio.Event()
 
@@ -122,7 +121,7 @@ async def test_daemon_early_stop() -> None:
 
         async def will_stop_soon() -> None:
             await client_connected.wait()
-            await daemon.stop(goto_sleep_on_stop=False)
+            await daemon.stop()
             daemon_stopped.set()
 
         await asyncio.gather(client_bg(), will_stop_soon())

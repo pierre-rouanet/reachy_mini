@@ -8,8 +8,13 @@ import pytest
 from reachy_mini import ReachyMiniApp
 from reachy_mini.apps import AppInfo, SourceKind
 from reachy_mini.apps.manager import AppManager, AppState
+from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.daemon import Daemon
 from reachy_mini.reachy_mini import ReachyMini
+
+
+# Common test config
+_TEST_CONFIG = DaemonArgs(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False)
 
 
 @pytest.mark.asyncio
@@ -18,13 +23,8 @@ async def test_app() -> None:
         def run(self, reachy_mini: ReachyMini, stop_event: Event) -> None:
             time.sleep(1)  # Simulate some processing time
 
-    daemon = Daemon()
-    await daemon.start(
-        sim=True,
-        headless=True,
-        wake_up_on_start=False,
-        use_audio=False,
-    )
+    daemon = Daemon(_TEST_CONFIG)
+    await daemon.start()
 
     stop = Event()
 
@@ -32,18 +32,13 @@ async def test_app() -> None:
         app = MockApp()
         app.run(mini, stop)
 
-    await daemon.stop(goto_sleep_on_stop=False)
+    await daemon.stop()
 
 
 @pytest.mark.asyncio
 async def test_app_manager() -> None:
-    daemon = Daemon()
-    await daemon.start(
-        sim=True,
-        headless=True,
-        wake_up_on_start=False,
-        use_audio=False,
-    )
+    daemon = Daemon(_TEST_CONFIG)
+    await daemon.start()
 
     app_mngr = AppManager()
     try:
@@ -79,18 +74,13 @@ async def test_app_manager() -> None:
     except Exception as e:
         pytest.fail(f"install_new_app raised an exception: {e}")
     finally:
-        await daemon.stop(goto_sleep_on_stop=False)
+        await daemon.stop()
 
 
 @pytest.mark.asyncio
 async def test_faulty_app() -> None:
-    daemon = Daemon()
-    await daemon.start(
-        sim=True,
-        headless=True,
-        wake_up_on_start=False,
-        use_audio=False,
-    )
+    daemon = Daemon(_TEST_CONFIG)
+    await daemon.start()
 
     app_mngr = AppManager()
 
@@ -116,11 +106,11 @@ async def test_faulty_app() -> None:
                 break
 
         await app_mngr.remove_app("faulty_app", daemon.logger)
-  
+
         if not success:
             pytest.fail("Faulty app did not reach ERROR state in time")
 
     except Exception as e:
         pytest.fail(f"install_new_app raised an exception: {e}")
     finally:
-        await daemon.stop(goto_sleep_on_stop=False)
+        await daemon.stop()

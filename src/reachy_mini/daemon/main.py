@@ -289,12 +289,8 @@ def run_daemon(args: DaemonArgs) -> None:
     async def _run() -> None:
         _setup_asyncio_exception_handler()
 
-        daemon = Daemon(
-            robot_name=args.robot_name,
-            wireless_version=args.wireless_version,
-            desktop_app_daemon=args.desktop_app_daemon,
-        )
-        await daemon.run4ever(args)
+        daemon = Daemon(args)
+        await daemon.run4ever()
 
     try:
         asyncio.run(_run())
