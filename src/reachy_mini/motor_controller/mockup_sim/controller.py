@@ -10,7 +10,7 @@ Apps open the webcam/microphone directly (like with a real robot).
 import numpy as np
 import numpy.typing as npt
 
-from ..abstract import MotorControlMode, MotorController
+from ..abstract import MotorController, MotorControlMode
 
 
 class MockupController(MotorController):

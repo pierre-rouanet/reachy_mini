@@ -9,8 +9,12 @@ from dataclasses import dataclass
 from threading import Thread
 from typing import Any, Optional
 
-from reachy_mini.motor_controller.abstract import MotorController, MotorControllerStatus, MotorControlMode
 from reachy_mini.daemon.utils import find_serial_port
+from reachy_mini.motor_controller.abstract import (
+    MotorController,
+    MotorControllerStatus,
+    MotorControlMode,
+)
 from reachy_mini.tools.reflash_motors import reflash_motors
 
 from .mockup_sim import MockupController

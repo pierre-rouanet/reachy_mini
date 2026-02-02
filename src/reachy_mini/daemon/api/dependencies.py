@@ -2,8 +2,9 @@
 
 from fastapi import HTTPException, Request, WebSocket
 
-from ...apps.manager import AppManager
 from reachy_mini.motor_controller.abstract import MotorController
+
+from ...apps.manager import AppManager
 from ..daemon import Daemon
 
 

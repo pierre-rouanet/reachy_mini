@@ -19,8 +19,8 @@ from huggingface_hub.errors import RepositoryNotFoundError
 from pydantic import BaseModel
 
 from reachy_mini.motion.recorded_move import RecordedMoves
-
 from reachy_mini.motor_controller.abstract import MotorController
+
 from ..dependencies import get_motor_controller, ws_get_motor_controller
 from ..models import AnyPose, FullBodyTarget
 
@@ -255,7 +255,7 @@ async def ws_set_target(
             data = await websocket.receive_text()
             try:
                 target = FullBodyTarget.model_validate_json(data)
-                await set_target(target, backend)
+                await set_target(target, motor_controller)
 
             except Exception as e:
                 await websocket.send_text(

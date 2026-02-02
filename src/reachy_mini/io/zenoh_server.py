@@ -15,7 +15,6 @@ from datetime import datetime
 import numpy as np
 import zenoh
 
-from reachy_mini.motor_controller.abstract import MotorControlMode, MotorController
 from reachy_mini.io.abstract import AbstractServer
 from reachy_mini.io.protocol import (
     GotoTaskRequest,
@@ -23,6 +22,7 @@ from reachy_mini.io.protocol import (
     TaskProgress,
     TaskRequest,
 )
+from reachy_mini.motor_controller.abstract import MotorController, MotorControlMode
 
 
 class ZenohServer(AbstractServer):

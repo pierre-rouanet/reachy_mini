@@ -18,28 +18,22 @@ busy_lock = threading.Lock()
 
 @router.post("/start")
 async def start_daemon(
-    request: Request,
     wake_up: bool,
     daemon: Daemon = Depends(get_daemon),
 ) -> dict[str, str]:
-    """Start the daemon."""
+    """Start the daemon.
+
+    Uses the configuration provided at daemon creation time.
+    The wake_up parameter controls whether to wake up the robot after starting.
+    """
     if busy_lock.locked():
         raise HTTPException(status_code=409, detail="Daemon is busy.")
 
     async def start(logger: logging.Logger) -> None:
         with busy_lock:
-            await daemon.start(
-                sim=request.app.state.args.sim,
-                serialport=request.app.state.args.serialport,
-                scene=request.app.state.args.scene,
-                localhost_only=request.app.state.args.localhost_only,
-                wake_up_on_start=wake_up,
-                check_collision=request.app.state.args.check_collision,
-                kinematics_engine=request.app.state.args.kinematics_engine,
-                headless=request.app.state.args.headless,
-                use_audio=request.app.state.args.use_audio,
-                hardware_config_filepath=request.app.state.args.hardware_config_filepath,
-            )
+            await daemon.start()
+            if wake_up and daemon._motor_manager.ready:
+                await daemon._motor_manager.wake_up()
 
     job_id = bg_job_register.run_command("daemon-start", start)
     return {"job_id": job_id}

@@ -18,7 +18,7 @@ import numpy.typing as npt
 
 import reachy_mini
 
-from ..abstract import MotorControlMode, MotorController
+from ..abstract import MotorController, MotorControlMode
 from .utils import (
     get_actuator_names,
     get_joint_addr_from_name,

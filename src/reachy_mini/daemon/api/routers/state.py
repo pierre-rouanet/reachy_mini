@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from reachy_mini.motor_controller.abstract import MotorController
+
 from ..dependencies import get_motor_controller, ws_get_motor_controller
 from ..models import AnyPose, DoAInfo, FullState, as_any_pose
 

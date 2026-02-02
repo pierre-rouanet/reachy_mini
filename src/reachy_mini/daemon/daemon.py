@@ -18,10 +18,10 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from reachy_mini.apps.manager import AppManager
 from reachy_mini.daemon.args import DaemonArgs
-from reachy_mini.motor_controller.abstract import MotorControllerStatus
-from reachy_mini.motor_controller.manager import MotorManager
 from reachy_mini.daemon.interface_manager import InterfaceManager
 from reachy_mini.daemon.utils import get_ip_address
+from reachy_mini.motor_controller.abstract import MotorControllerStatus
+from reachy_mini.motor_controller.manager import MotorManager
 
 if TYPE_CHECKING:
     from reachy_mini.motor_controller.abstract import MotorController

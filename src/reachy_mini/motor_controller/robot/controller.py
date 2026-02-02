@@ -16,7 +16,7 @@ from reachy_mini_motor_controller import ReachyMiniPyControlLoop
 
 from reachy_mini.utils.hardware_config.parser import parse_yaml_config
 
-from ..abstract import MotorControlMode, MotorController
+from ..abstract import MotorController, MotorControlMode
 
 
 class RobotController(MotorController):

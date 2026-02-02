@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from reachy_mini.motor_controller.abstract import MotorController
+
 from ..dependencies import get_motor_controller
 
 router = APIRouter(

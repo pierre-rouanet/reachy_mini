@@ -20,12 +20,12 @@ async def test_daemon_start_stop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_daemon_faulty_backend_fastapi_still_running() -> None:
-    """Test that FastAPI runs and returns error status when backend fails to start.
+async def test_daemon_faulty_motor_controller_fastapi_still_running() -> None:
+    """Test that FastAPI runs and returns error status when motor controller fails to start.
 
     Also verifies that the port is properly released after stopping.
     """
-    # Use real robot mode with invalid serial port to cause backend failure
+    # Use real robot mode with invalid serial port to cause motor controller failure
     faulty_config = DaemonArgs(
         sim=False,
         mockup_sim=False,
@@ -38,10 +38,10 @@ async def test_daemon_faulty_backend_fastapi_still_running() -> None:
     daemon = Daemon(faulty_config)
 
     try:
-        # Start should complete (FastAPI runs) but backend should fail
+        # Start should complete (FastAPI runs) but motor controller should fail
         state = await daemon.start()
 
-        # Daemon should be in ERROR state due to backend failure
+        # Daemon should be in ERROR state due to motor controller failure
         assert state == DaemonState.ERROR
         assert daemon._status.error is not None
         # Error could be "No such file or directory" or "No Reachy Mini serial port found"
@@ -56,7 +56,7 @@ async def test_daemon_faulty_backend_fastapi_still_running() -> None:
                 # Verify the status reflects the error
                 assert status["state"] == "error"
                 assert status["error"] is not None
-                assert status["backend_status"] is None  # Backend never started
+                assert status["motor_controller_status"] is None  # Motor controller never started
 
     finally:
         await daemon.stop()
@@ -89,8 +89,8 @@ async def test_daemon_client_disconnection() -> None:
                 assert status['state'] == "running"
                 assert status['simulation_enabled']
                 assert status['error'] is None
-                assert status['backend_status']['motor_control_mode'] == "enabled"
-                assert status['backend_status']['error'] is None
+                assert status['motor_controller_status']['motor_control_mode'] == "enabled"
+                assert status['motor_controller_status']['error'] is None
                 assert status['wlan_ip'] is None
                 client_connected.set()
 
