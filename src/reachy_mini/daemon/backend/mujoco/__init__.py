@@ -1,14 +1,9 @@
 """MuJoCo Backend for Reachy Mini Daemon."""
 
-from dataclasses import dataclass
-
 try:
     import mujoco  # noqa: F401
 
-    from reachy_mini.daemon.backend.mujoco.backend import (
-        MujocoBackend,
-        MujocoBackendStatus,
-    )
+    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
 
 except ImportError:
 
@@ -25,12 +20,4 @@ except ImportError:
 
     MujocoBackend = MujocoMockupBackend  # type: ignore[assignment, misc]
 
-    @dataclass
-    class MujocoMockupBackendStatus:
-        """Mockup class to avoid import errors when MuJoCo is not installed."""
-
-        pass
-
-    MujocoBackendStatus = MujocoMockupBackendStatus  # type: ignore[assignment, misc]
-
-__all__ = ["MujocoBackend", "MujocoBackendStatus"]
+__all__ = ["MujocoBackend"]

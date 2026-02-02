@@ -9,25 +9,21 @@ each type of backend.
 """
 
 import asyncio
-import json
 import logging
 import threading
 import time
 import typing
-from abc import abstractmethod
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Callable, Dict, Optional
+from typing import Annotated, Any, Dict, Optional
 
 import numpy as np
-import zenoh
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 
 if typing.TYPE_CHECKING:
-    from reachy_mini.daemon.backend.mockup_sim.backend import MockupSimBackendStatus
-    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackendStatus
-    from reachy_mini.daemon.backend.robot.backend import RobotBackendStatus
     from reachy_mini.kinematics import AnyKinematics
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.goto import GotoMove
@@ -48,8 +44,39 @@ class MotorControlMode(str, Enum):
     GravityCompensation = "gravity_compensation"  # Torque ON and controlled in current to compensate for gravity
 
 
-class Backend:
-    """Base class for robot backends, simulated or real."""
+@dataclass
+class BackendStatus:
+    """Base status for all backends."""
+
+    motor_control_mode: MotorControlMode
+    error: str | None = None
+    ready: bool = False
+    last_alive: float | None = None
+    control_loop_stats: dict[str, Any] = field(default_factory=dict)
+
+
+class Backend(ABC):
+    """Abstract base class for robot backends, simulated or real.
+
+    This class implements a template method pattern for the control loop.
+    Subclasses must implement the abstract methods to provide hardware/sim-specific behavior.
+
+    Abstract methods (must implement):
+        - _read_joint_positions(): Read current positions from hardware/sim
+        - _apply_targets(): Write target positions to hardware/sim
+        - get_motor_control_mode(): Get current motor control mode
+        - set_motor_control_mode(): Set motor control mode
+        - set_motor_torque_ids(): Set torque for specific motors
+
+    Hook methods (may override):
+        - _on_start(): Called once before the control loop starts
+        - _on_update(): Called each iteration after state update
+        - _on_stop(): Called once after the control loop ends
+        - _wait_for_tick(): Controls timing (default: Python sleep, override for Rust-synced timing)
+    """
+
+    # Control loop frequency in Hz (can be overridden by subclasses)
+    control_frequency: float = 50.0
 
     def __init__(
         self,
@@ -129,13 +156,7 @@ class Backend:
             Annotated[NDArray[np.float64], (2,)] | None
         ) = None  # [0, 1]
 
-        self.joint_positions_publisher: zenoh.Publisher | None = None
-        self.pose_publisher: zenoh.Publisher | None = None
-        self.recording_publisher: zenoh.Publisher | None = None
-        self.imu_publisher: zenoh.Publisher | None = None
         self.error: str | None = None  # To store any error that occurs during execution
-        self.is_recording = False  # Flag to indicate if recording is active
-        self.recorded_data: list[dict[str, Any]] = []  # List to store recorded data
 
         # variables to store the last computed head joint positions and pose
         self._last_target_body_yaw: float | None = (
@@ -162,9 +183,6 @@ class Backend:
             "m": 0.5e-3,  # m
         }
 
-        # Recording lock to guard buffer swaps and appends
-        self._rec_lock = threading.Lock()
-
         self.audio: Optional[MediaManager] = None
         if self.use_audio:
             self.logger.debug("Initializing daemon audio backend.")
@@ -178,9 +196,20 @@ class Backend:
             0  # Tracks nested acquisitions within the owning thread
         )
 
-        # WebRTC support
-        self._send_message_to_webrtc: Optional[Callable[[Optional[str], str], None]] = (
-            None
+        # Stats tracking
+        self._stats_record_period = 1.0  # seconds
+        self._stats_timestamps: list[float] = []
+        self._stats_error_count = 0
+        self._stats_record_t0 = 0.0
+
+        # Timing for control loop
+        self._tick_period = 1.0 / self.control_frequency
+        self._last_tick_time = 0.0
+
+        # Status object (common for all backends)
+        self._status = BackendStatus(
+            motor_control_mode=MotorControlMode.Disabled,
+            ready=False,
         )
 
     # Life cycle methods
@@ -194,11 +223,141 @@ class Backend:
             raise e
 
     def run(self) -> None:
-        """Run the backend.
+        """Run the control loop (template method).
 
-        This method is a placeholder and should be overridden by subclasses.
+        This implements the common control loop structure. Subclasses customize
+        behavior by implementing the abstract methods and optionally overriding hooks.
         """
-        raise NotImplementedError("The method run should be overridden by subclasses.")
+        # Initialize timing
+        self._stats_record_t0 = time.time()
+        self._last_tick_time = time.time()
+
+        # Initialization hook
+        self._on_start()
+
+        while not self.should_stop.is_set():
+            # 1. Wait for next tick (handles timing)
+            self._wait_for_tick()
+
+            # 2. Read current joint positions from hardware/sim
+            head_positions, antenna_positions = self._read_joint_positions()
+
+            # 3. Update kinematics model (FK)
+            self.update_head_kinematics_model(
+                np.array(head_positions),
+                np.array(antenna_positions),
+            )
+
+            # 4. Update IK if needed
+            self._update_ik_if_needed()
+
+            # 5. Apply targets to hardware/sim
+            self._apply_targets()
+
+            # 6. Mark as ready and update status
+            self.ready.set()
+            self._status.ready = True
+            self._status.last_alive = time.time()
+
+            # 7. Track timestamps for stats
+            self._stats_timestamps.append(time.time())
+
+            # 8. Collect stats periodically
+            if time.time() - self._stats_record_t0 > self._stats_record_period:
+                self._collect_control_loop_stats()
+
+            # 9. Per-iteration hook (for backend-specific tasks)
+            self._on_update()
+
+        # Cleanup hook
+        self._on_stop()
+
+    def _update_ik_if_needed(self) -> None:
+        """Update target joint positions from IK if required."""
+        if not self.ik_required:
+            return
+        try:
+            self.update_target_head_joints_from_ik(
+                self.target_head_pose, self.target_body_yaw
+            )
+        except ValueError as e:
+            self.logger.warning(f"IK error: {e}")
+
+    # Abstract methods - subclasses must implement
+    @abstractmethod
+    def _read_joint_positions(
+        self,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Read current joint positions from hardware/simulation.
+
+        Returns:
+            Tuple of (head_joint_positions, antenna_joint_positions) as numpy arrays.
+
+        """
+        pass
+
+    @abstractmethod
+    def _apply_targets(self) -> None:
+        """Apply target positions to hardware/simulation."""
+        pass
+
+    # Hook methods - subclasses may override
+    def _on_start(self) -> None:
+        """Run initialization before the control loop starts.
+
+        Override to perform initialization (e.g., initialize kinematics state).
+        """
+        pass
+
+    def _on_update(self) -> None:
+        """Handle per-iteration tasks after state update.
+
+        Override to perform per-iteration tasks (e.g., stats collection, viewer sync).
+        """
+        pass
+
+    def _on_stop(self) -> None:
+        """Perform cleanup after the control loop ends.
+
+        Override to perform cleanup (e.g., close viewer, join threads).
+        """
+        pass
+
+    def _wait_for_tick(self) -> None:
+        """Wait for the next control loop tick.
+
+        This method handles timing synchronization for the control loop.
+        The default implementation sleeps to maintain the target frequency.
+        Always sleeps at least 1ms to release the GIL for other threads.
+
+        Override for custom timing behavior:
+        - RobotBackend: blocks until Rust signals next cycle
+        - SimBackends: use default (Python timing)
+        """
+        now = time.time()
+        elapsed = now - self._last_tick_time
+        sleep_time = max(0.001, self._tick_period - elapsed)  # At least 1ms to release GIL
+        time.sleep(sleep_time)
+        self._last_tick_time = time.time()
+
+    def _collect_control_loop_stats(self) -> None:
+        """Collect control loop statistics.
+
+        Override to add backend-specific stats (call super() to keep base stats).
+        """
+        dt = np.diff(self._stats_timestamps)
+        if len(dt) > 1:
+            self._status.control_loop_stats["mean_control_loop_frequency"] = float(
+                np.mean(1.0 / dt)
+            )
+            self._status.control_loop_stats["max_control_loop_interval"] = float(
+                np.max(dt)
+            )
+            self._status.control_loop_stats["nb_error"] = self._stats_error_count
+
+        self._stats_timestamps.clear()
+        self._stats_error_count = 0
+        self._stats_record_t0 = time.time()
 
     def close(self) -> None:
         """Close the backend and release resources.
@@ -232,45 +391,17 @@ class Backend:
             self._active_move_depth -= 1
         self._play_move_lock.release()
 
-    def get_status(
-        self,
-    ) -> "RobotBackendStatus | MujocoBackendStatus | MockupSimBackendStatus":
-        """Return backend statistics.
+    def get_status(self) -> BackendStatus:
+        """Return backend status.
 
-        This method is a placeholder and should be overridden by subclasses.
+        Returns the common BackendStatus. Subclasses can override to return
+        a BackendStatus subclass with additional fields if needed.
         """
-        raise NotImplementedError(
-            "The method get_status should be overridden by subclasses."
-        )
+        self._status.error = self.error
+        self._status.motor_control_mode = self.get_motor_control_mode()
+        return self._status
 
     # Present/Target joint positions
-    def set_joint_positions_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for joint positions.
-
-        Args:
-            publisher: A publisher object that will be used to publish joint positions.
-
-        """
-        self.joint_positions_publisher = publisher
-
-    def set_pose_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for head pose.
-
-        Args:
-            publisher: A publisher object that will be used to publish head pose.
-
-        """
-        self.pose_publisher = publisher
-
-    def set_imu_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for IMU data.
-
-        Args:
-            publisher: A publisher object that will be used to publish IMU data.
-
-        """
-        self.imu_publisher = publisher
-
     def update_target_head_joints_from_ik(
         self,
         pose: Annotated[NDArray[np.float64], (4, 4)] | None = None,
@@ -532,57 +663,13 @@ class Backend:
             self.set_target_antenna_joint_positions(antennas_joint)
             await asyncio.sleep(0.01)
 
-    def set_recording_publisher(self, publisher: zenoh.Publisher) -> None:
-        """Set the publisher for recording data.
-
-        Args:
-            publisher: A publisher object that will be used to publish recorded data.
-
-        """
-        self.recording_publisher = publisher
-
-    def append_record(self, record: dict[str, Any]) -> None:
-        """Append a record to the recorded data.
-
-        Args:
-            record (dict): A dictionary containing the record data to be appended.
-
-        """
-        if not self.is_recording:
-            return
-        # Double-check under lock to avoid race with stop_recording
-        with self._rec_lock:
-            if self.is_recording:
-                self.recorded_data.append(record)
-
-    def start_recording(self) -> None:
-        """Start recording data."""
-        with self._rec_lock:
-            self.recorded_data = []
-            self.is_recording = True
-
-    def stop_recording(self) -> None:
-        """Stop recording data and publish the recorded data."""
-        # Swap buffer under lock so writers cannot touch the published list
-        with self._rec_lock:
-            self.is_recording = False
-            recorded_data, self.recorded_data = self.recorded_data, []
-        # Publish outside the lock
-        if self.recording_publisher is not None:
-            self.recording_publisher.put(json.dumps(recorded_data))
-        else:
-            self.logger.warning(
-                "stop_recording called but recording_publisher is not set; dropping data."
-            )
-
     def get_present_head_joint_positions(self) -> Annotated[NDArray[np.float64], (7,)]:
-        """Return the present head joint positions.
-
-        This method is a placeholder and should be overridden by subclasses.
-        """
-        raise NotImplementedError(
-            "The method get_present_head_joint_positions should be overridden by subclasses."
-        )
+        """Return the present head joint positions."""
+        if self.current_head_joint_positions is None:
+            # Fall back to reading directly if not yet set
+            head_pos, _ = self._read_joint_positions()
+            return np.array(head_pos)
+        return self.current_head_joint_positions
 
     def get_present_body_yaw(self) -> float:
         """Return the present body yaw."""
@@ -603,13 +690,12 @@ class Backend:
     def get_present_antenna_joint_positions(
         self,
     ) -> Annotated[NDArray[np.float64], (2,)]:
-        """Return the present antenna joint positions.
-
-        This method is a placeholder and should be overridden by subclasses.
-        """
-        raise NotImplementedError(
-            "The method get_present_antenna_joint_positions should be overridden by subclasses."
-        )
+        """Return the present antenna joint positions."""
+        if self.current_antenna_joint_positions is None:
+            # Fall back to reading directly if not yet set
+            _, antenna_pos = self._read_joint_positions()
+            return np.array(antenna_pos)
+        return self.current_antenna_joint_positions
 
     # Kinematics methods
     def update_head_kinematics_model(
@@ -842,19 +928,3 @@ class Backend:
             "passive_7_y": self.head_kinematics.get_joint("passive_7_y"),  # type: ignore [union-attr]
             "passive_7_z": self.head_kinematics.get_joint("passive_7_z"),  # type: ignore [union-attr]
         }
-
-    def setup_webrtc_interface(self, gst_webrtc: Any) -> None:
-        """Set up the WebRTC interface for motor control.
-
-        Args:
-            gst_webrtc (Any): The GstWebRTC instance to setup.
-
-        """
-        gst_webrtc.set_message_handler(self._handle_webrtc_message)
-        self._send_message_to_webrtc = gst_webrtc.send_data_message
-
-    def _handle_webrtc_message(self, peer_id: str, message: str) -> None:
-        message_data = json.loads(message)
-        if "set_target" in message_data:
-            target_pose = message_data["set_target"]
-            self.set_target_head_pose(np.array(target_pose))

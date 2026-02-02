@@ -1,8 +1,5 @@
 """Real robot backend for Reachy Mini."""
 
-from reachy_mini.daemon.backend.robot.backend import (
-    RobotBackend,
-    RobotBackendStatus,
-)
+from reachy_mini.daemon.backend.robot.backend import RobotBackend
 
-__all__ = ["RobotBackend", "RobotBackendStatus"]
+__all__ = ["RobotBackend"]

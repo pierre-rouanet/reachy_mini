@@ -6,15 +6,12 @@ It includes methods for running the simulation, getting joint positions, and con
 
 """
 
-import json
 import time
-from dataclasses import dataclass
 from importlib.resources import files
 from threading import Thread
 from typing import Annotated, Any, Optional
 
 import cv2
-import log_throttling
 import mujoco
 import mujoco.viewer
 import numpy as np
@@ -38,6 +35,10 @@ CAMERA_SIZES = {CAMERA_REACHY: (1280, 720), CAMERA_STUDIO_CLOSE: (640, 640)}
 
 class MujocoBackend(Backend):
     """Simulated Reachy Mini using MuJoCo."""
+
+    # MuJoCo runs at higher frequency internally, decimated for control loop
+    control_frequency: float = 50.0  # Control loop frequency
+    _sim_frequency: float = 500.0  # Internal simulation frequency
 
     def __init__(
         self,
@@ -87,8 +88,9 @@ class MujocoBackend(Backend):
             f"{mjcf_root_path}/scenes/{scene}.xml"
         )
         self.data = mujoco.MjData(self.model)
-        self.model.opt.timestep = 0.002  # s, simulation timestep, 500hz
-        self.decimation = 10  # -> 50hz control loop
+        self.model.opt.timestep = 1.0 / self._sim_frequency
+
+        self.decimation = int(self._sim_frequency / self.control_frequency)
         self.rendering_timestep = 0.04  # s, rendering loop # 25Hz
         self.streaming_timestep = 0.04  # s, streaming loop # 25Hz
 
@@ -121,6 +123,12 @@ class MujocoBackend(Backend):
                     self.model.geom_contype[i] = 0
                     self.model.geom_conaffinity[i] = 0
 
+        # Viewer and threads (initialized in _on_start)
+        self._viewer: Any = None
+        self._rendering_thread: Optional[Thread] = None
+        self._streaming_thread: Optional[Thread] = None
+        self._step_count = 0
+
     def _get_camera_id(self, camera_name: str) -> Any:
         """Get the id of the virtual camera."""
         return mujoco.mj_name2id(
@@ -134,11 +142,8 @@ class MujocoBackend(Backend):
         camera_size = CAMERA_SIZES[camera_name]
         return mujoco.Renderer(self.model, height=camera_size[1], width=camera_size[0])
 
-    def streaming_loop(self, camera_name: str, ws_uri: str) -> None:
-        """Streaming loop for the Mujoco simulation over WebSocket.
-
-        Capture the image from the virtual camera and send it over WebSocket to the ws_uri.
-        """
+    def _streaming_loop(self, camera_name: str, ws_uri: str) -> None:
+        """Streaming loop for the Mujoco simulation over WebSocket."""
         streamer = AsyncWebSocketFrameSender(ws_uri=ws_uri + "/video_stream")
         offscreen_renderer = self._get_renderer(camera_name)
         camera_id = self._get_camera_id(camera_name)
@@ -147,23 +152,19 @@ class MujocoBackend(Backend):
             start_t = time.time()
             offscreen_renderer.update_scene(self.data, camera_id)
 
-            # OPTIMIZATION: Disable expensive rendering effects on the scene
+            # OPTIMIZATION: Disable expensive rendering effects
             offscreen_renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = 0
             offscreen_renderer.scene.flags[mujoco.mjtRndFlag.mjRND_REFLECTION] = 0
 
             im = offscreen_renderer.render()
-
             im = cv2.cvtColor(im, cv2.COLOR_RGB2BGR)
             streamer.send_frame(im)
 
             took = time.time() - start_t
             time.sleep(max(0, self.streaming_timestep - took))
 
-    def rendering_loop(self, camera_name: str, port: int) -> None:
-        """Offline Rendering loop for the Mujoco simulation.
-
-        Capture the image from the virtual camera_name and send it over UDP to the port or over WebSocket to the ws_uri.
-        """
+    def _rendering_loop(self, camera_name: str, port: int) -> None:
+        """Offline Rendering loop for the Mujoco simulation."""
         streamer = UDPJPEGFrameSender(dest_port=port)
         offscreen_renderer = self._get_renderer(camera_name)
         camera_id = self._get_camera_id(camera_name)
@@ -178,39 +179,35 @@ class MujocoBackend(Backend):
             took = time.time() - start_t
             time.sleep(max(0, self.rendering_timestep - took))
 
-    def run(self) -> None:
-        """Run the Mujoco simulation with a viewer.
+    # Template method hooks
 
-        This method initializes the viewer and enters the main simulation loop.
-        It updates the joint positions at a rate and publishes the joint positions.
-        """
-        step = 1
+    def _on_start(self) -> None:
+        """Initialize viewer, threads, and simulation state."""
+        # Start WebSocket streaming thread if configured
         if self.websocket_uri:
-            robot_view_streaming_thread = Thread(
-                target=self.streaming_loop,
+            self._streaming_thread = Thread(
+                target=self._streaming_loop,
                 args=(CAMERA_STUDIO_CLOSE, self.websocket_uri),
                 daemon=True,
             )
-            robot_view_streaming_thread.start()
+            self._streaming_thread.start()
 
+        # Start viewer if not headless
         if not self.headless:
-            viewer = mujoco.viewer.launch_passive(
+            self._viewer = mujoco.viewer.launch_passive(
                 self.model, self.data, show_left_ui=False, show_right_ui=False
             )
-            with viewer.lock():
-                viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-                viewer.cam.distance = 0.8  # ≃ ||pos - lookat||
-                viewer.cam.azimuth = 160  # degrees
-                viewer.cam.elevation = -20  # degrees
-                viewer.cam.lookat[:] = [0, 0, 0.15]
+            with self._viewer.lock():
+                self._viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+                self._viewer.cam.distance = 0.8
+                self._viewer.cam.azimuth = 160
+                self._viewer.cam.elevation = -20
+                self._viewer.cam.lookat[:] = [0, 0, 0.15]
 
-                # force one render with your new camera
                 mujoco.mj_step(self.model, self.data)
-                viewer.sync()
+                self._viewer.sync()
 
-                # im = self.get_camera()
-                # self.streamer_udp.send_frame(im)
-
+        # Set initial positions
         self.data.qpos[self.joint_qpos_addr] = np.array(
             self._SLEEP_HEAD_JOINT_POSITIONS + self._SLEEP_ANTENNAS_JOINT_POSITIONS
         ).reshape(-1, 1)
@@ -218,173 +215,92 @@ class MujocoBackend(Backend):
             self._SLEEP_HEAD_JOINT_POSITIONS + self._SLEEP_ANTENNAS_JOINT_POSITIONS
         )
 
-        # recompute all kinematics, collisions, etc.
+        # Initialize simulation
         mujoco.mj_forward(self.model, self.data)
-
-        for i in range(100):
+        for _ in range(100):
             mujoco.mj_step(self.model, self.data)
 
-        # enable collisions
+        # Enable collisions
         for i in self.col_inds:
             self.model.geom_contype[i] = 1
             self.model.geom_conaffinity[i] = 1
 
-        for i in range(100):
+        for _ in range(100):
             mujoco.mj_step(self.model, self.data)
 
-        # one more frame so the viewer shows your startup pose
         mujoco.mj_step(self.model, self.data)
         if not self.headless:
-            viewer.sync()
-
-            rendering_thread = Thread(
-                target=self.rendering_loop, args=(CAMERA_REACHY, 5005), daemon=True
+            self._viewer.sync()
+            self._rendering_thread = Thread(
+                target=self._rendering_loop, args=(CAMERA_REACHY, 5005), daemon=True
             )
-            rendering_thread.start()
+            self._rendering_thread.start()
 
-        # Update the internal states of the IK and FK to the current configuration
-        # This is important to avoid jumps when starting the robot (beore wake-up)
-        self.head_kinematics.ik(self.get_mj_present_head_pose(), no_iterations=20)
-        self.head_kinematics.fk(
-            self.get_present_head_joint_positions(), no_iterations=20
-        )
+        # Initialize kinematics state
+        self.head_kinematics.ik(self._get_mj_head_pose(), no_iterations=20)
+        head_pos, _ = self._read_joint_positions()
+        self.head_kinematics.fk(head_pos, no_iterations=20)
 
-        # 3) now enter your normal loop
-        while not self.should_stop.is_set():
-            start_t = time.time()
+    def _on_update(self) -> None:
+        """Step physics simulation and sync viewer."""
+        # Apply controls and step simulation
+        if self.target_head_joint_positions is not None:
+            self.data.ctrl[:7] = self.target_head_joint_positions
+        if self.target_antenna_joint_positions is not None:
+            self.data.ctrl[-2:] = -self.target_antenna_joint_positions
 
-            if step % self.decimation == 0:
-                # update the current states
-                self.current_head_joint_positions = (
-                    self.get_present_head_joint_positions()
-                )
-                self.current_antenna_joint_positions = (
-                    self.get_present_antenna_joint_positions()
-                )
-                # Update the Placo kinematics model to recompute passive joints
-                self.update_head_kinematics_model(
-                    self.current_head_joint_positions,
-                    self.current_antenna_joint_positions,
-                )
-                self.current_head_pose = self.get_mj_present_head_pose()
-
-                # Update the target head joint positions from IK if necessary
-                # - does nothing if the targets did not change
-                if self.ik_required:
-                    try:
-                        self.update_target_head_joints_from_ik(
-                            self.target_head_pose, self.target_body_yaw
-                        )
-                    except ValueError as e:
-                        log_throttling.by_time(self.logger, interval=0.5).warning(
-                            f"IK error: {e}"
-                        )
-
-                if self.target_head_joint_positions is not None:
-                    self.data.ctrl[:7] = self.target_head_joint_positions
-                if self.target_antenna_joint_positions is not None:
-                    self.data.ctrl[-2:] = -self.target_antenna_joint_positions
-
-                if (
-                    self.joint_positions_publisher is not None
-                    and self.pose_publisher is not None
-                ):
-                    if not self.is_shutting_down:
-                        self.joint_positions_publisher.put(
-                            json.dumps(
-                                {
-                                    "head_joint_positions": self.current_head_joint_positions.tolist(),
-                                    "antennas_joint_positions": self.current_antenna_joint_positions.tolist(),
-                                }
-                            ).encode("utf-8")
-                        )
-                        self.pose_publisher.put(
-                            json.dumps(
-                                {
-                                    "head_pose": self.get_present_head_pose().tolist(),
-                                }
-                            ).encode("utf-8")
-                        )
-                    self.ready.set()
-
-                if not self.headless:
-                    viewer.sync()
-
+        # Step physics multiple times (decimation)
+        for _ in range(self.decimation):
             mujoco.mj_step(self.model, self.data)
 
-            took = time.time() - start_t
-            time.sleep(max(0, self.model.opt.timestep - took))
-            # print(f"Step {step}: took {took*1e6:.1f}us")
-            step += 1
+        # Sync viewer
+        if not self.headless and self._viewer is not None:
+            self._viewer.sync()
 
-        if not self.headless:
-            viewer.close()
-            rendering_thread.join()
-        if self.websocket_uri:
-            robot_view_streaming_thread.join()
+    def _on_stop(self) -> None:
+        """Close viewer and join threads."""
+        if not self.headless and self._viewer is not None:
+            self._viewer.close()
+            if self._rendering_thread is not None:
+                self._rendering_thread.join()
+        if self._streaming_thread is not None:
+            self._streaming_thread.join()
 
-    def get_mj_present_head_pose(self) -> Annotated[npt.NDArray[np.float64], (4, 4)]:
-        """Get the current head pose from the Mujoco simulation.
+    # Abstract method implementations
 
-        Returns:
-            np.ndarray: The current head pose as a 4x4 transformation matrix.
-
-        """
-        mj_current_head_pose = np.eye(4)
-
-        mj_current_head_pose[:3, :3] = self.data.site_xmat[self.head_site_id].reshape(
-            3, 3
-        )
-        mj_current_head_pose[:3, 3] = self.data.site_xpos[self.head_site_id]
-        mj_current_head_pose[2, 3] -= 0.177
-        return mj_current_head_pose
-
-    def get_status(self) -> "MujocoBackendStatus":
-        """Get the status of the Mujoco backend.
-
-        Returns:
-            dict: An empty dictionary as the Mujoco backend does not have a specific status to report.
-
-        """
-        return MujocoBackendStatus(motor_control_mode=self.get_motor_control_mode())
-
-    def get_present_head_joint_positions(
+    def _read_joint_positions(
         self,
-    ) -> Annotated[npt.NDArray[np.float64], (7,)]:
-        """Get the current joint positions of the head."""
-        pos: npt.NDArray[np.float64] = self.data.qpos[
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Read joint positions from MuJoCo simulation."""
+        head_pos: npt.NDArray[np.float64] = self.data.qpos[
             self.joint_qpos_addr[:7]
         ].flatten()
-        return pos
-
-    def get_present_antenna_joint_positions(
-        self,
-    ) -> Annotated[npt.NDArray[np.float64], (2,)]:
-        """Get the current joint positions of the antennas."""
-        pos: npt.NDArray[np.float64] = self.data.qpos[
+        antenna_pos: npt.NDArray[np.float64] = -self.data.qpos[
             self.joint_qpos_addr[-2:]
         ].flatten()
-        return -pos
+        return head_pos, antenna_pos
+
+    def _apply_targets(self) -> None:
+        """Targets are applied in _on_update along with physics step."""
+        # MuJoCo applies targets through data.ctrl in _on_update
+        pass
+
+    def _get_mj_head_pose(self) -> Annotated[npt.NDArray[np.float64], (4, 4)]:
+        """Get the current head pose from the Mujoco simulation."""
+        pose = np.eye(4)
+        pose[:3, :3] = self.data.site_xmat[self.head_site_id].reshape(3, 3)
+        pose[:3, 3] = self.data.site_xpos[self.head_site_id]
+        pose[2, 3] -= 0.177
+        return pose
 
     def get_motor_control_mode(self) -> MotorControlMode:
         """Get the motor control mode."""
-        return MotorControlMode.Enabled
+        return self._status.motor_control_mode
 
     def set_motor_control_mode(self, mode: MotorControlMode) -> None:
-        """Set the motor control mode."""
-        pass
+        """Set the motor control mode (simulation always reports Enabled)."""
+        self._status.motor_control_mode = mode
 
     def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
-        """Set the motor torque state for specific motor names."""
+        """Set the motor torque state for specific motor names (no-op in simulation)."""
         pass
-
-
-@dataclass
-class MujocoBackendStatus:
-    """Dataclass to represent the status of the Mujoco backend.
-
-    Empty for now, as the Mujoco backend does not have a specific status to report.
-    """
-
-    motor_control_mode: MotorControlMode
-    error: str | None = None

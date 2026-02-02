@@ -15,7 +15,7 @@ from importlib.metadata import PackageNotFoundError, version
 from threading import Event, Thread
 from typing import Any, Optional
 
-from reachy_mini.daemon.backend.abstract import MotorControlMode
+from reachy_mini.daemon.backend.abstract import BackendStatus, MotorControlMode
 from reachy_mini.daemon.utils import (
     convert_enum_to_dict,
     find_serial_port,
@@ -30,9 +30,9 @@ from reachy_mini.io import (
 from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.tools.reflash_motors import reflash_motors
 
-from .backend.mockup_sim import MockupSimBackend, MockupSimBackendStatus
-from .backend.mujoco import MujocoBackend, MujocoBackendStatus
-from .backend.robot import RobotBackend, RobotBackendStatus
+from .backend.mockup_sim import MockupSimBackend
+from .backend.mujoco import MujocoBackend
+from .backend.robot import RobotBackend
 
 
 class Daemon:
@@ -300,7 +300,7 @@ class Daemon:
             await asyncio.sleep(
                 0.2
             )  # Give some time for the backend to release the audio device
-            self.backend.setup_webrtc_interface(self._webrtc)
+            # TODO: Re-implement WebRTC interface setup outside backend
             self._webrtc.start()
 
         self.logger.info("Daemon started successfully.")
@@ -683,9 +683,7 @@ class DaemonStatus:
     desktop_app_daemon: bool
     simulation_enabled: Optional[bool]
     mockup_sim_enabled: Optional[bool]
-    backend_status: Optional[
-        RobotBackendStatus | MujocoBackendStatus | MockupSimBackendStatus
-    ]
+    backend_status: Optional[BackendStatus]
     error: Optional[str] = None
     wlan_ip: Optional[str] = None
     version: Optional[str] = None

@@ -87,16 +87,10 @@ class ZenohServer(AbstractServer):
             self._handle_command,
         )
         self.pub = self.session.declare_publisher(f"{self.prefix}/joint_positions")
-        self.pub_record = self.session.declare_publisher(f"{self.prefix}/recorded_data")
-        self.backend.set_joint_positions_publisher(self.pub)
-        self.backend.set_recording_publisher(self.pub_record)
-
         self.pub_pose = self.session.declare_publisher(f"{self.prefix}/head_pose")
-        self.backend.set_pose_publisher(self.pub_pose)
-
-        # Declare IMU data publisher
         self.pub_imu = self.session.declare_publisher(f"{self.prefix}/imu_data")
-        self.backend.set_imu_publisher(self.pub_imu)
+
+        # TODO: Implement polling loop to publish backend state
 
         self.task_req_sub = self.session.declare_subscriber(
             f"{self.prefix}/task",
@@ -182,14 +176,6 @@ class ZenohServer(AbstractServer):
                     print(e)
             if "automatic_body_yaw" in command:
                 self.backend.set_automatic_body_yaw(command["automatic_body_yaw"])
-
-            if "set_target_record" in command:
-                self.backend.append_record(command["set_target_record"])
-
-            if "start_recording" in command:
-                self.backend.start_recording()
-            if "stop_recording" in command:
-                self.backend.stop_recording()
         self._cmd_event.set()
 
     def _handle_task_request(self, sample: zenoh.Sample) -> None:
