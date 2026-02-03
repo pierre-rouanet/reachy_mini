@@ -5,9 +5,9 @@ import aiohttp
 import numpy as np
 import pytest
 
+from reachy_mini import ReachyMini
 from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.daemon import Daemon, DaemonState
-from reachy_mini.reachy_mini import ReachyMini
 
 # Common test config
 _TEST_CONFIG = DaemonArgs(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False)

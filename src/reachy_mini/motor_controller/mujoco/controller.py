@@ -61,7 +61,7 @@ class MujocoController(MotorController):
 
         self.headless = headless
 
-        from reachy_mini.reachy_mini import (
+        from reachy_mini.sdk_client.reachy_mini import (
             SLEEP_ANTENNAS_JOINT_POSITIONS,
             SLEEP_HEAD_JOINT_POSITIONS,
         )

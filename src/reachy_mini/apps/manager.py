@@ -243,7 +243,7 @@ class AppManager:
             self.daemon.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
 
             try:
-                from reachy_mini.reachy_mini import INIT_HEAD_POSE
+                from reachy_mini.sdk_client.reachy_mini import INIT_HEAD_POSE
 
                 self.logger.getChild("runner").info("Returning robot to zero position")
                 await self.daemon.motion_manager.goto_target(

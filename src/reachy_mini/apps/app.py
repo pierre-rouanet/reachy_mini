@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from reachy_mini.reachy_mini import ReachyMini
+from reachy_mini.sdk_client.reachy_mini import ReachyMini
 
 
 class ReachyMiniApp(ABC):

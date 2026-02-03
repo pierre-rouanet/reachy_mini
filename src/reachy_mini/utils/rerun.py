@@ -22,7 +22,7 @@ from urdf_parser_py import urdf
 
 from reachy_mini.kinematics.placo_kinematics import PlacoKinematics
 from reachy_mini.media.media_manager import MediaBackend
-from reachy_mini.reachy_mini import ReachyMini
+from reachy_mini.sdk_client.reachy_mini import ReachyMini
 
 
 class Rerun:
