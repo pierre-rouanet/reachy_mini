@@ -17,6 +17,9 @@ from reachy_mini.motor_controller.abstract import MotorController
 from ..dependencies import get_audio, get_motor_controller, ws_get_motor_controller
 from ..models import AnyPose, DoAInfo, FullState, as_any_pose
 
+# Maximum streaming frequency (Hz) - limited to avoid overwhelming clients
+MAX_STREAMING_FREQUENCY = 100.0
+
 router = APIRouter(prefix="/state")
 
 
@@ -147,9 +150,12 @@ async def ws_full_state(
     use_pose_matrix: bool = False,
     motor_controller: MotorController = Depends(ws_get_motor_controller),
 ) -> None:
-    """WebSocket endpoint to stream the full state of the robot."""
+    """WebSocket endpoint to stream the full state of the robot.
+
+    Supports frequencies up to 100Hz for teleoperation use cases.
+    """
     await websocket.accept()
-    period = 1.0 / frequency
+    period = 1.0 / min(frequency, MAX_STREAMING_FREQUENCY)
 
     try:
         while True:

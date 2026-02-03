@@ -1,17 +1,18 @@
+"""Tests for the app manager."""
 
 import asyncio
+import time
 from pathlib import Path
 from threading import Event
-import time
+
 import pytest
 
 from reachy_mini import ReachyMiniApp
 from reachy_mini.apps import AppInfo, SourceKind
-from reachy_mini.apps.manager import AppManager, AppState
+from reachy_mini.apps.manager import AppState
 from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.daemon import Daemon
 from reachy_mini.reachy_mini import ReachyMini
-
 
 # Common test config
 _TEST_CONFIG = DaemonArgs(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False)
@@ -19,29 +20,25 @@ _TEST_CONFIG = DaemonArgs(sim=True, headless=True, wake_up_on_start=False, use_a
 
 @pytest.mark.asyncio
 async def test_app() -> None:
+    """Test basic daemon startup and ReachyMini SDK access."""
+
     class MockApp(ReachyMiniApp):
         def run(self, reachy_mini: ReachyMini, stop_event: Event) -> None:
             time.sleep(1)  # Simulate some processing time
 
-    daemon = Daemon(_TEST_CONFIG)
-    await daemon.start()
+    async with Daemon(_TEST_CONFIG):
+        stop = Event()
 
-    stop = Event()
-
-    with ReachyMini(media_backend="no_media") as mini:
-        app = MockApp()
-        app.run(mini, stop)
-
-    await daemon.stop()
+        with ReachyMini(media_backend="no_media") as mini:
+            app = MockApp()
+            app.run(mini, stop)
 
 
 @pytest.mark.asyncio
 async def test_app_manager() -> None:
-    daemon = Daemon(_TEST_CONFIG)
-    await daemon.start()
-
-    app_mngr = AppManager()
-    try:
+    """Test app installation, start, stop, and removal."""
+    async with Daemon(_TEST_CONFIG) as daemon:
+        app_mngr = daemon.app_manager
         before_installed_apps = await app_mngr.list_available_apps(SourceKind.INSTALLED)
 
         app_info = AppInfo(
@@ -71,28 +68,21 @@ async def test_app_manager() -> None:
 
         assert len(after_uninstalled_apps) == len(before_installed_apps)
 
-    except Exception as e:
-        pytest.fail(f"install_new_app raised an exception: {e}")
-    finally:
-        await daemon.stop()
-
 
 @pytest.mark.asyncio
 async def test_faulty_app() -> None:
-    daemon = Daemon(_TEST_CONFIG)
-    await daemon.start()
+    """Test that a faulty app reaches ERROR state."""
+    async with Daemon(_TEST_CONFIG) as daemon:
+        app_mngr = daemon.app_manager
 
-    app_mngr = AppManager()
-
-    app_info = AppInfo(
-        name="faulty_app",
-        source_kind=SourceKind.LOCAL,
-        extra={"path": str(Path(__file__).parent / "faulty_app")},
-    )
-    try:
+        app_info = AppInfo(
+            name="faulty_app",
+            source_kind=SourceKind.LOCAL,
+            extra={"path": str(Path(__file__).parent / "faulty_app")},
+        )
         await app_mngr.install_new_app(app_info, daemon.logger)
 
-        status = await app_mngr.start_app("faulty_app", media_backend="no_media")
+        await app_mngr.start_app("faulty_app", media_backend="no_media")
 
         success = False
         for _ in range(10):
@@ -107,10 +97,4 @@ async def test_faulty_app() -> None:
 
         await app_mngr.remove_app("faulty_app", daemon.logger)
 
-        if not success:
-            pytest.fail("Faulty app did not reach ERROR state in time")
-
-    except Exception as e:
-        pytest.fail(f"install_new_app raised an exception: {e}")
-    finally:
-        await daemon.stop()
+        assert success, "Faulty app did not reach ERROR state in time"
