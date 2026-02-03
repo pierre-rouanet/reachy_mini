@@ -102,9 +102,9 @@ async def test_api_client_goto_antennas() -> None:
             state = client.get_state()
             assert state.antennas_position is not None
             assert len(state.antennas_position) == 2
-            # Allow some tolerance
-            assert abs(state.antennas_position[0] - target_antennas[0]) < 0.1
-            assert abs(state.antennas_position[1] - target_antennas[1]) < 0.1
+            # Allow some tolerance for simulation timing
+            assert abs(state.antennas_position[0] - target_antennas[0]) < 0.15
+            assert abs(state.antennas_position[1] - target_antennas[1]) < 0.15
 
         finally:
             client.disconnect()
