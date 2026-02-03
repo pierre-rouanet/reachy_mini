@@ -1,14 +1,14 @@
-"""Interface manager for Reachy Mini daemon.
+"""API manager for Reachy Mini daemon.
 
-This module provides the InterfaceManager class that handles
-communication interfaces (FastAPI HTTP server, WebRTC streaming).
+This module provides the ApiManager class that handles
+the FastAPI HTTP server for REST API and WebSocket endpoints.
 """
 
 import asyncio
 import logging
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
@@ -23,10 +23,10 @@ if TYPE_CHECKING:
     from reachy_mini.daemon.daemon import Daemon
 
 
-class InterfaceManager:
-    """Manages daemon communication interfaces.
+class ApiManager:
+    """Manages the FastAPI HTTP server.
 
-    Handles FastAPI HTTP server and WebRTC streaming interfaces.
+    Handles FastAPI HTTP server for REST API and WebSocket endpoints.
     """
 
     def __init__(
@@ -35,7 +35,7 @@ class InterfaceManager:
         log_level: str = "INFO",
         wireless_version: bool = False,
     ) -> None:
-        """Initialize the InterfaceManager.
+        """Initialize the ApiManager.
 
         Args:
             daemon: The Daemon instance that owns this manager.
@@ -53,35 +53,15 @@ class InterfaceManager:
         self._fastapi_app: FastAPI | None = None
         self._uvicorn_server: uvicorn.Server | None = None
         self._server_thread: threading.Thread | None = None
-        self._webrtc: Optional[Any] = None  # GstWebRTC, imported conditionally
-
-        # Initialize WebRTC for wireless version
-        if wireless_version:
-            try:
-                from reachy_mini.media.webrtc_daemon import GstWebRTC
-
-                self._webrtc = GstWebRTC(log_level)
-            except Exception as e:
-                self.logger.error(f"Failed to initialize WebRTC: {e}")
-                self._webrtc = None
 
     def __del__(self) -> None:
         """Destructor to ensure proper cleanup."""
-        self.logger.debug("Cleaning up InterfaceManager resources...")
-        if self._webrtc is not None:
-            self._webrtc.stop()
-            self._webrtc.__del__()
-            self._webrtc = None
+        self.logger.debug("Cleaning up ApiManager resources...")
 
     @property
     def fastapi_app(self) -> FastAPI | None:
         """Get the FastAPI application instance."""
         return self._fastapi_app
-
-    @property
-    def webrtc(self) -> Optional[Any]:
-        """Get the WebRTC instance."""
-        return self._webrtc
 
     def create_fastapi_app(
         self,
@@ -190,7 +170,7 @@ class InterfaceManager:
         args: DaemonArgs,
         health_check_event: asyncio.Event | None = None,
     ) -> None:
-        """Run the FastAPI server with uvicorn.
+        """Run the FastAPI server with uvicorn (blocking).
 
         Args:
             args: Configuration arguments (DaemonArgs dataclass).
@@ -314,21 +294,3 @@ class InterfaceManager:
         self._server_thread = None
         self._uvicorn_server = None
         self.logger.info("FastAPI server stopped.")
-
-    async def start_webrtc(self) -> None:
-        """Start WebRTC streaming (if enabled)."""
-        if self._webrtc is not None:
-            self.logger.info("Starting WebRTC...")
-            # Give some time for the backend to release the audio device
-            await asyncio.sleep(0.2)
-            self._webrtc.start()
-
-    def pause_webrtc(self) -> None:
-        """Pause WebRTC streaming (keeps signaling server running)."""
-        if self._webrtc is not None:
-            self._webrtc.pause()
-
-    def stop_webrtc(self) -> None:
-        """Stop WebRTC streaming."""
-        if self._webrtc is not None:
-            self._webrtc.stop()

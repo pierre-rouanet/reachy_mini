@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import patch
 
 import aiohttp
 import numpy as np
@@ -7,7 +8,6 @@ import pytest
 from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.daemon import Daemon, DaemonState
 from reachy_mini.reachy_mini import ReachyMini
-
 
 # Common test config
 _TEST_CONFIG = DaemonArgs(sim=True, headless=True, wake_up_on_start=False, use_audio=False, goto_sleep_on_stop=False)
@@ -69,6 +69,61 @@ async def test_daemon_faulty_motor_controller_fastapi_still_running() -> None:
                 status = await response.json()
                 # This daemon should be running normally
                 assert status["state"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_daemon_faulty_audio_backend_still_running() -> None:
+    """Test that daemon runs normally when audio backend fails to initialize.
+
+    Audio is non-critical - daemon should continue in RUNNING state even if
+    audio fails. Motion commands that use audio should gracefully degrade.
+    """
+    # Config with audio enabled
+    config_with_audio = DaemonArgs(
+        sim=True,
+        headless=True,
+        wake_up_on_start=False,
+        use_audio=True,  # Enable audio
+        goto_sleep_on_stop=False,
+    )
+
+    # Mock MediaManager to raise an exception (simulating missing audio device)
+    with patch(
+        "reachy_mini.daemon.daemon.MediaManager",
+        side_effect=RuntimeError("No audio device found: speaker not detected"),
+    ):
+        daemon = Daemon(config_with_audio)
+
+        try:
+            state = await daemon.start()
+
+            # TODO: Maybe this error should still be visible in status?
+
+            # Daemon should still be RUNNING (audio failure is non-critical)
+            assert state == DaemonState.RUNNING
+            assert daemon._status.error is None  # No error since audio is optional
+
+            # Audio manager should be None due to initialization failure
+            assert daemon._audio_manager is None
+
+            # FastAPI should still be reachable
+            async with aiohttp.ClientSession() as session:
+                async with session.get("http://127.0.0.1:8000/api/daemon/status") as response:
+                    assert response.status == 200
+                    status = await response.json()
+                    assert status["state"] == "running"
+
+            # Motor controller should work normally
+            assert daemon.motor_controller is not None
+            assert daemon.motor_controller.ready.is_set()
+
+            # MotionManager should handle missing audio gracefully
+            # (play_sound/stop_sound should be no-ops when audio is None)
+            daemon.motion_manager.play_sound("wake_up.wav")  # Should not raise
+            daemon.motion_manager.stop_sound()  # Should not raise
+
+        finally:
+            await daemon.stop()
 
 
 @pytest.mark.asyncio
