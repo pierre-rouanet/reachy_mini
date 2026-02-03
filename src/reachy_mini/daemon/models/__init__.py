@@ -6,12 +6,17 @@ WebRTCManager (data channels) to ensure consistent data formats.
 The SDK client also uses these models for communication.
 """
 
-from .motor_command import GotoCommand, MotorControlCommand, TargetCommand
+from .motor_command import (
+    FullBodyTarget,
+    GotoRequest,
+    MotorControlCommand,
+    MoveUUID,
+)
 from .motor_state import (
     DoAInfo,
+    FullState,
     JointPositions,
     MotorControlMode,
-    MotorState,
     MotorStatus,
     SensorState,
 )
@@ -33,12 +38,13 @@ __all__ = [
     # Motor state models
     "MotorControlMode",
     "JointPositions",
-    "MotorState",
+    "FullState",
     "MotorStatus",
     "DoAInfo",
     "SensorState",
     # Motor command models
-    "TargetCommand",
+    "FullBodyTarget",
     "MotorControlCommand",
-    "GotoCommand",
+    "GotoRequest",
+    "MoveUUID",
 ]
