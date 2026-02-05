@@ -6,16 +6,16 @@ This exposes:
 """
 
 import asyncio
-from datetime import datetime, timezone
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
+from reachy_mini.daemon.models import AnyPose, DoAData, FullState, pose_from_numpy
 from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.motor_controller.abstract import MotorController
 
 from ..dependencies import get_audio, get_motor_controller, ws_get_motor_controller
-from ..models import AnyPose, DoAInfo, FullState, as_any_pose
 
 # Maximum streaming frequency (Hz) - limited to avoid overwhelming clients
 MAX_STREAMING_FREQUENCY = 100.0
@@ -38,14 +38,14 @@ async def get_head_pose(
         AnyPose: The present head pose.
 
     """
-    return as_any_pose(motor_controller.get_present_head_pose(), use_pose_matrix)
+    return pose_from_numpy(motor_controller.get_present_head_pose(), use_pose_matrix)
 
 
-@router.get("/present_body_yaw")
-async def get_body_yaw(
+@router.get("/present_body_rotation")
+async def get_body_rotation(
     motor_controller: MotorController = Depends(get_motor_controller),
 ) -> float:
-    """Get the present body yaw (in radians)."""
+    """Get the present body rotation (in radians)."""
     return motor_controller.get_present_body_yaw()
 
 
@@ -62,7 +62,7 @@ async def get_antenna_joint_positions(
 @router.get("/doa")
 async def get_doa(
     audio: MediaManager | None = Depends(get_audio),
-) -> DoAInfo | None:
+) -> DoAData | None:
     """Get the Direction of Arrival from the microphone array.
 
     Returns the angle in radians (0=left, π/2=front, π=right) and speech detection status.
@@ -73,7 +73,7 @@ async def get_doa(
     result = audio.get_DoA()
     if result is None:
         return None
-    return DoAInfo(angle=result[0], speech_detected=result[1])
+    return DoAData(angle=result[0], speech_detected=result[1])
 
 
 @router.get("/full")
@@ -83,17 +83,21 @@ async def get_full_state(
     with_target_head_pose: bool = False,
     with_head_joints: bool = False,
     with_target_head_joints: bool = False,
-    with_body_yaw: bool = True,
-    with_target_body_yaw: bool = False,
-    with_antenna_positions: bool = True,
-    with_target_antenna_positions: bool = False,
+    with_body_rotation: bool = True,
+    with_target_body_rotation: bool = False,
+    with_antennas: bool = True,
+    with_target_antennas: bool = False,
     with_passive_joints: bool = False,
-    with_doa: bool = False,
+    sensors: str | None = None,
     use_pose_matrix: bool = False,
     motor_controller: MotorController = Depends(get_motor_controller),
     audio: MediaManager | None = Depends(get_audio),
 ) -> FullState:
-    """Get the full robot state, with optional fields."""
+    """Get the full robot state, with optional fields.
+
+    Args:
+        sensors: Comma-separated sensor types (e.g., "doa,imu") or "all" for all available.
+    """
     result: dict[str, Any] = {}
 
     if with_control_mode:
@@ -101,35 +105,51 @@ async def get_full_state(
 
     if with_head_pose:
         pose = motor_controller.get_present_head_pose()
-        result["head_pose"] = as_any_pose(pose, use_pose_matrix)
+        result["head_pose"] = pose_from_numpy(pose, use_pose_matrix)
     if with_target_head_pose:
         target_pose = motor_controller.target_head_pose
         assert target_pose is not None
-        result["target_head_pose"] = as_any_pose(target_pose, use_pose_matrix)
+        result["target_head_pose"] = pose_from_numpy(target_pose, use_pose_matrix)
     if with_head_joints:
-        result["head_joints"] = motor_controller.get_present_head_joint_positions()
+        # Return only the 6 stewart platform joints (exclude body_rotation which is index 0)
+        head_joints = motor_controller.get_present_head_joint_positions()
+        result["head_joints"] = list(head_joints[1:])
     if with_target_head_joints:
-        result["target_head_joints"] = motor_controller.target_head_joint_positions
-    if with_body_yaw:
-        result["body_yaw"] = motor_controller.get_present_body_yaw()
-    if with_target_body_yaw:
-        result["target_body_yaw"] = motor_controller.target_body_yaw
-    if with_antenna_positions:
-        result["antennas_position"] = motor_controller.get_present_antenna_joint_positions()
-    if with_target_antenna_positions:
-        result["target_antennas_position"] = motor_controller.target_antenna_joint_positions
+        target = motor_controller.target_head_joint_positions
+        if target is not None:
+            result["target_head_joints"] = list(target[1:])
+    if with_body_rotation:
+        result["body_rotation"] = motor_controller.get_present_body_yaw()
+    if with_target_body_rotation:
+        result["target_body_rotation"] = motor_controller.target_body_yaw
+    if with_antennas:
+        pos = motor_controller.get_present_antenna_joint_positions()
+        result["antennas"] = (pos[0], pos[1])
+    if with_target_antennas:
+        target = motor_controller.target_antenna_joint_positions
+        if target is not None:
+            result["target_antennas"] = (target[0], target[1])
+
     if with_passive_joints:
         joints = motor_controller.get_present_passive_joint_positions()
         if joints is not None:
             result["passive_joints"] = list(joints.values())
         else:
             result["passive_joints"] = None
-    if with_doa and audio:
-        doa_result = audio.get_DoA()
-        if doa_result:
-            result["doa"] = DoAInfo(angle=doa_result[0], speech_detected=doa_result[1])
 
-    result["timestamp"] = datetime.now(timezone.utc)
+    # Handle sensors
+    result["sensors"] = {}
+    if sensors:
+        requested_sensors = sensors.split(",") if sensors != "all" else ["doa"]  # TODO: get from registry
+
+        if "doa" in requested_sensors and audio:
+            doa_result = audio.get_DoA()
+            if doa_result:
+                result["sensors"]["doa"] = DoAData(angle=doa_result[0], speech_detected=doa_result[1])
+
+        # TODO: Add IMU and other sensors via sensor registry
+
+    result["timestamp"] = time.time()
     return FullState.model_validate(result)
 
 
@@ -141,12 +161,12 @@ async def ws_full_state(
     with_target_head_pose: bool = False,
     with_head_joints: bool = False,
     with_target_head_joints: bool = False,
-    with_body_yaw: bool = True,
-    with_target_body_yaw: bool = False,
-    with_antenna_positions: bool = True,
-    with_target_antenna_positions: bool = False,
+    with_body_rotation: bool = True,
+    with_target_body_rotation: bool = False,
+    with_antennas: bool = True,
+    with_target_antennas: bool = False,
     with_passive_joints: bool = False,
-    with_doa: bool = False,
+    sensors: str | None = None,
     use_pose_matrix: bool = False,
     motor_controller: MotorController = Depends(ws_get_motor_controller),
 ) -> None:
@@ -164,12 +184,12 @@ async def ws_full_state(
                 with_target_head_pose=with_target_head_pose,
                 with_head_joints=with_head_joints,
                 with_target_head_joints=with_target_head_joints,
-                with_body_yaw=with_body_yaw,
-                with_target_body_yaw=with_target_body_yaw,
-                with_antenna_positions=with_antenna_positions,
-                with_target_antenna_positions=with_target_antenna_positions,
+                with_body_rotation=with_body_rotation,
+                with_target_body_rotation=with_target_body_rotation,
+                with_antennas=with_antennas,
+                with_target_antennas=with_target_antennas,
                 with_passive_joints=with_passive_joints,
-                with_doa=with_doa,
+                sensors=sensors,
                 use_pose_matrix=use_pose_matrix,
                 motor_controller=motor_controller,
             )

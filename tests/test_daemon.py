@@ -135,7 +135,8 @@ async def test_daemon_multiple_start_stop() -> None:
 
 @pytest.mark.asyncio
 async def test_daemon_client_disconnection() -> None:
-    async with Daemon(_TEST_CONFIG) as daemon:
+    config = DaemonArgs(sim=True, headless=True, wake_up_on_start=True, use_audio=False, goto_sleep_on_stop=False)
+    async with Daemon(config) as daemon:
         client_connected = asyncio.Event()
 
         async def simple_client() -> None:
@@ -167,12 +168,35 @@ async def test_daemon_early_stop() -> None:
                 client_connected.set()
                 await daemon_stopped.wait()
 
-                # Make sure the keep-alive check runs at least once
-                reachy.client._check_alive_evt.clear()
-                reachy.client._check_alive_evt.wait(timeout=100.0)
-
                 with pytest.raises(ConnectionError, match="Lost connection with the server."):
                     reachy.set_target(head=np.eye(4))
+
+        async def will_stop_soon() -> None:
+            await client_connected.wait()
+            await daemon.stop()
+            daemon_stopped.set()
+
+        await asyncio.gather(client_bg(), will_stop_soon())
+
+
+@pytest.mark.asyncio
+async def test_daemon_early_stop_get_state() -> None:
+    """Test that getting state also fails when daemon stops."""
+    async with Daemon(_TEST_CONFIG) as daemon:
+        client_connected = asyncio.Event()
+        daemon_stopped = asyncio.Event()
+
+        async def client_bg() -> None:
+            with ReachyMini(media_backend="no_media") as reachy:
+                # Verify we can get head pose while connected
+                pose = reachy.get_current_head_pose()
+                assert pose is not None
+
+                client_connected.set()
+                await daemon_stopped.wait()
+
+                with pytest.raises(ConnectionError, match="Lost connection with the server."):
+                    reachy.get_current_head_pose()
 
         async def will_stop_soon() -> None:
             await client_connected.wait()

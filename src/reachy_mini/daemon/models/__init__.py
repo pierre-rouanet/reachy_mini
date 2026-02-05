@@ -10,15 +10,11 @@ from .motor_command import (
     FullBodyTarget,
     GotoRequest,
     MotorControlCommand,
-    MoveUUID,
 )
 from .motor_state import (
-    DoAInfo,
     FullState,
-    JointPositions,
     MotorControlMode,
-    MotorStatus,
-    SensorState,
+    MotorName,
 )
 from .pose import (
     AnyPose,
@@ -26,6 +22,11 @@ from .pose import (
     XYZRPYPose,
     pose_from_numpy,
     pose_to_numpy,
+)
+from .sensors import (
+    DoAData,
+    IMUData,
+    SensorData,
 )
 
 __all__ = [
@@ -37,14 +38,14 @@ __all__ = [
     "pose_to_numpy",
     # Motor state models
     "MotorControlMode",
-    "JointPositions",
+    "MotorName",
     "FullState",
-    "MotorStatus",
-    "DoAInfo",
-    "SensorState",
     # Motor command models
     "FullBodyTarget",
     "MotorControlCommand",
     "GotoRequest",
-    "MoveUUID",
+    # Sensor models
+    "SensorData",
+    "DoAData",
+    "IMUData",
 ]

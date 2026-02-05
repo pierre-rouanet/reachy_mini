@@ -9,15 +9,15 @@ This exposes:
 
 import asyncio
 import json
-from enum import Enum
 from typing import Any, Coroutine
 from uuid import UUID, uuid4
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from huggingface_hub.errors import RepositoryNotFoundError
-from pydantic import BaseModel
 
+from reachy_mini.daemon.models import FullBodyTarget, GotoRequest
+from reachy_mini.daemon.streaming.messages import GotoDoneEvent, GotoStartedEvent, MoveId, MoveStatus
 from reachy_mini.motion.manager import MotionManager
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.motor_controller.abstract import MotorController
@@ -27,71 +27,17 @@ from ..dependencies import (
     get_motor_controller,
     ws_get_motor_controller,
 )
-from ..models import AnyPose, FullBodyTarget
 
-move_tasks: dict[UUID, asyncio.Task[None]] = {}
+move_tasks: dict[MoveId, asyncio.Task[None]] = {}
 move_listeners: list[WebSocket] = []
 
 
 router = APIRouter(prefix="/move")
 
 
-class InterpolationMode(str, Enum):
-    """Interpolation modes for movement."""
-
-    # TODO: This should be the same as for the backend
-
-    LINEAR = "linear"
-    MINJERK = "minjerk"
-    EASE = "ease"
-    CARTOON = "cartoon"
-
-
-class GotoModelRequest(BaseModel):
-    """Request model for the goto endpoint."""
-
-    head_pose: AnyPose | None = None
-    antennas: tuple[float, float] | None = None
-    body_yaw: float | None = None
-    duration: float
-    interpolation: InterpolationMode = InterpolationMode.MINJERK
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "head_pose": {
-                        "x": 0.0,
-                        "y": 0.0,
-                        "z": 0.0,
-                        "roll": 0.0,
-                        "pitch": 0.0,
-                        "yaw": 0.0,
-                    },
-                    "antennas": [0.0, 0.0],
-                    "body_yaw": 0.0,
-                    "duration": 2.0,
-                    "interpolation": "minjerk",
-                },
-                {
-                    "antennas": [0.0, 0.0],
-                    "duration": 1.0,
-                    "interpolation": "linear",
-                },
-            ],
-        }
-    }
-
-
-class MoveUUID(BaseModel):
-    """Model representing a unique identifier for a move task."""
-
-    uuid: UUID
-
-
-def create_move_task(coro: Coroutine[Any, Any, None]) -> MoveUUID:
+def create_move_task(coro: Coroutine[Any, Any, None]) -> GotoStartedEvent:
     """Create a new move task using async task coroutine."""
-    uuid = uuid4()
+    move_id: MoveId = str(uuid4())
 
     async def notify_listeners(message: str, details: str = "") -> None:
         for ws in move_listeners:
@@ -99,7 +45,7 @@ def create_move_task(coro: Coroutine[Any, Any, None]) -> MoveUUID:
                 await ws.send_json(
                     {
                         "type": message,
-                        "uuid": str(uuid),
+                        "id": move_id,
                         "details": details,
                     }
                 )
@@ -116,20 +62,20 @@ def create_move_task(coro: Coroutine[Any, Any, None]) -> MoveUUID:
         except asyncio.CancelledError:
             await notify_listeners("move_cancelled")
         finally:
-            move_tasks.pop(uuid, None)
+            move_tasks.pop(move_id, None)
 
     task = asyncio.create_task(wrap_coro())
-    move_tasks[uuid] = task
+    move_tasks[move_id] = task
 
-    return MoveUUID(uuid=uuid)
+    return GotoStartedEvent(id=move_id)
 
 
-async def stop_move_task(uuid: UUID) -> dict[str, str]:
+async def stop_move_task(move_id: MoveId) -> GotoDoneEvent:
     """Stop a running move task by cancelling it."""
-    if uuid not in move_tasks:
-        raise KeyError(f"Running move with UUID {uuid} not found")
+    if move_id not in move_tasks:
+        return GotoDoneEvent(id=move_id, status=MoveStatus.NotFound)
 
-    task = move_tasks.pop(uuid, None)
+    task = move_tasks.pop(move_id, None)
     assert task is not None
 
     if task:
@@ -139,40 +85,38 @@ async def stop_move_task(uuid: UUID) -> dict[str, str]:
             except asyncio.CancelledError:
                 pass
 
-    return {
-        "message": f"Stopped move with UUID: {uuid}",
-    }
+    return GotoDoneEvent(id=move_id, status=MoveStatus.Cancelled)
 
 
 @router.get("/running")
-async def get_running_moves() -> list[MoveUUID]:
+async def get_running_moves() -> list[dict[str, str]]:
     """Get a list of currently running move tasks."""
-    return [MoveUUID(uuid=uuid) for uuid in move_tasks.keys()]
+    return [{"id": move_id} for move_id in move_tasks.keys()]
 
 
 @router.post("/goto")
 async def goto(
-    goto_req: GotoModelRequest, motion_manager: MotionManager = Depends(get_motion_manager)
-) -> MoveUUID:
+    goto_req: GotoRequest, motion_manager: MotionManager = Depends(get_motion_manager)
+) -> GotoStartedEvent:
     """Request a movement to a specific target."""
     return create_move_task(
         motion_manager.goto_target(
             head=goto_req.head_pose.to_pose_array() if goto_req.head_pose else None,
             antennas=np.array(goto_req.antennas) if goto_req.antennas else None,
-            body_yaw=goto_req.body_yaw,
+            body_yaw=goto_req.body_rotation,  # API uses body_rotation, internal uses body_yaw
             duration=goto_req.duration,
         )
     )
 
 
 @router.post("/play/wake_up")
-async def play_wake_up(motion_manager: MotionManager = Depends(get_motion_manager)) -> MoveUUID:
+async def play_wake_up(motion_manager: MotionManager = Depends(get_motion_manager)) -> GotoStartedEvent:
     """Request the robot to wake up."""
     return create_move_task(motion_manager.wake_up())
 
 
 @router.post("/play/goto_sleep")
-async def play_goto_sleep(motion_manager: MotionManager = Depends(get_motion_manager)) -> MoveUUID:
+async def play_goto_sleep(motion_manager: MotionManager = Depends(get_motion_manager)) -> GotoStartedEvent:
     """Request the robot to go to sleep."""
     return create_move_task(motion_manager.goto_sleep())
 
@@ -195,7 +139,7 @@ async def play_recorded_move_dataset(
     dataset_name: str,
     move_name: str,
     motion_manager: MotionManager = Depends(get_motion_manager),
-) -> MoveUUID:
+) -> GotoStartedEvent:
     """Request the robot to play a predefined recorded move from a dataset."""
     try:
         recorded_moves = RecordedMoves(dataset_name)
@@ -208,10 +152,25 @@ async def play_recorded_move_dataset(
     return create_move_task(motion_manager.play_move(move))
 
 
+@router.post("/goto/{move_id}/cancel")
+async def cancel_goto(move_id: str) -> GotoDoneEvent:
+    """Cancel a running goto movement."""
+    return await stop_move_task(move_id)
+
+
+@router.get("/goto/{move_id}")
+async def get_goto_status(move_id: str) -> GotoDoneEvent:
+    """Get the status of a goto movement."""
+    if move_id in move_tasks:
+        return GotoDoneEvent(id=move_id, status=MoveStatus.InProgress)
+    # TODO: Track completed moves to return proper status
+    return GotoDoneEvent(id=move_id, status=MoveStatus.NotFound)
+
+
 @router.post("/stop")
-async def stop_move(uuid: MoveUUID) -> dict[str, str]:
-    """Stop a running move task."""
-    return await stop_move_task(uuid.uuid)
+async def stop_move(move_id: str) -> GotoDoneEvent:
+    """Stop a running move task (deprecated, use DELETE /goto/{id})."""
+    return await stop_move_task(move_id)
 
 
 @router.websocket("/ws/updates")
@@ -239,13 +198,19 @@ async def set_target(
         # Avoid fighting with the daemon while a trajectory is running
         motor_controller.logger.warning("Ignoring set_target request: move already running.")
         return {"status": "ignored", "reason": "move_running"}
-    motor_controller.set_target(
-        head=target.target_head_pose.to_pose_array()
-        if target.target_head_pose
-        else None,
-        antennas=np.array(target.target_antennas) if target.target_antennas else None,
-        body_yaw=target.target_body_yaw,
-    )
+
+    # Task-space (cartesian) control takes precedence over joint-space
+    if target.head_pose is not None:
+        motor_controller.set_target_head_pose(target.head_pose.to_pose_array())
+    elif target.head_joints is not None:
+        motor_controller.set_target_head_joint_positions(np.array(target.head_joints))
+
+    if target.antennas is not None:
+        motor_controller.set_target_antenna_joint_positions(np.array(target.antennas))
+
+    if target.body_rotation is not None:
+        motor_controller.set_target_body_rotation(target.body_rotation)
+
     return {"status": "ok"}
 
 

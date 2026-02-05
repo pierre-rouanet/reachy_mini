@@ -8,7 +8,7 @@ import pytest
 from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.daemon import Daemon
 from reachy_mini.daemon.models import FullState
-from reachy_mini.daemon.models.motor_command import MoveUUID
+from reachy_mini.daemon.streaming.messages import MoveId
 from reachy_mini.sdk_client.api_client import ApiClient
 
 _TEST_CONFIG = DaemonArgs(
@@ -30,10 +30,10 @@ async def test_api_client_connect() -> None:
             assert isinstance(state, FullState)
             assert state.head_pose is not None
             assert state.head_joints is not None
-            assert len(state.head_joints) == 7
-            assert state.antennas_position is not None
-            assert len(state.antennas_position) == 2
-            assert state.body_yaw is not None
+            assert len(state.head_joints) == 6  # 6 stewart platform joints (body_rotation separate)
+            assert state.antennas is not None
+            assert len(state.antennas) == 2
+            assert state.body_rotation is not None
 
         finally:
             client.disconnect()
@@ -61,9 +61,9 @@ async def test_api_client_goto_head_pose() -> None:
                 duration=0.5,
             )
 
-            # Verify we got a valid UUID
-            assert isinstance(move_uuid, MoveUUID)
-            assert move_uuid.uuid is not None
+            # Verify we got a valid move ID (UUID string)
+            assert isinstance(move_uuid, str)
+            assert len(move_uuid) > 0
 
             # Wait for move completion
             client.wait_for_move_completion(move_uuid, timeout=2.0)
@@ -93,18 +93,18 @@ async def test_api_client_goto_antennas() -> None:
                 duration=0.5,
             )
 
-            assert isinstance(move_uuid, MoveUUID)
+            assert isinstance(move_uuid, str)
 
             # Wait for move completion
             client.wait_for_move_completion(move_uuid, timeout=2.0)
 
             # Verify antennas moved close to target
             state = client.get_state()
-            assert state.antennas_position is not None
-            assert len(state.antennas_position) == 2
+            assert state.antennas is not None
+            assert len(state.antennas) == 2
             # Allow some tolerance for simulation timing
-            assert abs(state.antennas_position[0] - target_antennas[0]) < 0.15
-            assert abs(state.antennas_position[1] - target_antennas[1]) < 0.15
+            assert abs(state.antennas[0] - target_antennas[0]) < 0.15
+            assert abs(state.antennas[1] - target_antennas[1]) < 0.15
 
         finally:
             client.disconnect()
@@ -127,12 +127,12 @@ async def test_api_client_goto_combined() -> None:
                 duration=0.5,
             )
 
-            assert isinstance(move_uuid, MoveUUID)
+            assert isinstance(move_uuid, str)
             client.wait_for_move_completion(move_uuid, timeout=2.0)
 
             state = client.get_state()
             assert state.head_pose is not None
-            assert state.antennas_position is not None
+            assert state.antennas is not None
 
         finally:
             client.disconnect()
@@ -168,13 +168,13 @@ async def test_api_client_goto_invalid_uuid() -> None:
         try:
             client.connect(timeout=5.0)
 
-            # Create a fake MoveUUID that was never sent
+            # Create a fake move ID that was never sent
             from uuid import uuid4
 
-            fake_uuid = MoveUUID(uuid=uuid4())
+            fake_move_id = str(uuid4())
 
-            with pytest.raises(ValueError, match="No ongoing move with UUID"):
-                client.wait_for_move_completion(fake_uuid, timeout=1.0)
+            with pytest.raises(ValueError, match="No ongoing move with ID"):
+                client.wait_for_move_completion(fake_move_id, timeout=1.0)
 
         finally:
             client.disconnect()
@@ -199,9 +199,9 @@ async def test_api_client_goto_sequential() -> None:
             time.sleep(0.1)
 
             state1 = client.get_state()
-            assert state1.antennas_position is not None
+            assert state1.antennas is not None
             # Use wider tolerance for simulation
-            assert abs(state1.antennas_position[0] - 0.5) < 0.2
+            assert abs(state1.antennas[0] - 0.5) < 0.2
 
             # Second movement
             move2 = client.send_goto_request(
@@ -213,8 +213,8 @@ async def test_api_client_goto_sequential() -> None:
             time.sleep(0.1)
 
             state2 = client.get_state()
-            assert state2.antennas_position is not None
-            assert abs(state2.antennas_position[0] - (-0.5)) < 0.2
+            assert state2.antennas is not None
+            assert abs(state2.antennas[0] - (-0.5)) < 0.2
 
         finally:
             client.disconnect()

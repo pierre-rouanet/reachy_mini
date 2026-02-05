@@ -8,7 +8,6 @@ import json
 import logging
 import threading
 from typing import Any, List, Optional, Union, cast
-from uuid import UUID
 
 import httpx
 import numpy as np
@@ -18,7 +17,8 @@ from websockets.sync.client import connect as ws_connect
 from websockets.sync.connection import Connection
 
 from reachy_mini.daemon.models import FullBodyTarget, FullState, MotorControlMode
-from reachy_mini.daemon.models.motor_command import GotoRequest, MoveUUID
+from reachy_mini.daemon.models.motor_command import GotoRequest
+from reachy_mini.daemon.streaming.messages import MoveId
 from reachy_mini.daemon.models.pose import pose_from_numpy
 from reachy_mini.utils.interpolation import InterpolationTechnique
 
@@ -59,7 +59,7 @@ class ApiClient:
         self._goto_ws: Connection | None = None
         self._state_thread: threading.Thread | None = None
         self._goto_update_thread: threading.Thread | None = None
-        self._goto_wait_events: dict[UUID, threading.Event] = {}
+        self._goto_wait_events: dict[MoveId, threading.Event] = {}
         self._stop_event = threading.Event()
 
         # Synchronization
@@ -203,15 +203,15 @@ class ApiClient:
         """Handle incoming goto update message from WebSocket."""
         update = json.loads(msg)
 
-        assert "uuid" in update, "Invalid goto update message: missing 'uuid'"
+        assert "id" in update, "Invalid goto update message: missing 'id'"
         assert "type" in update, "Invalid goto update message: missing 'type'"
 
-        move_uuid = UUID(update["uuid"])
+        move_id = update["id"]
         update_type = update["type"]
 
         if update_type in ("move_completed", "move_failed", "move_cancelled"):
-            if move_uuid in self._goto_wait_events:
-                event = self._goto_wait_events.pop(move_uuid)
+            if move_id in self._goto_wait_events:
+                event = self._goto_wait_events.pop(move_id)
                 event.set()
 
     def send_goto_request(
@@ -222,8 +222,8 @@ class ApiClient:
         ] = None,  # [right_angle, left_angle] (in rads)
         duration: float = 0.5,  # Duration in seconds for the movement, default is 0.5 seconds.
         method: InterpolationTechnique = InterpolationTechnique.MIN_JERK,  # can be "linear", "minjerk", "ease" or "cartoon", default is "minjerk")
-        body_yaw: float | None = 0.0,  # Body yaw angle in radians
-    ) -> MoveUUID:
+        body_rotation: float | None = 0.0,  # Body yaw angle in radians
+    ) -> MoveId:
         """Send a goto request to the daemon.
 
         Args:
@@ -231,10 +231,10 @@ class ApiClient:
             antennas: List or array of two floats for right and left antenna angles (in radians).
             duration: Duration in seconds for the movement.
             method: Interpolation technique to use.
-            body_yaw: Body yaw angle in radians.
+            body_rotation: Body yaw angle in radians.
 
         Returns:
-            MoveUUID: The UUID of the initiated move.
+            MoveId: The ID of the initiated move.
 
         """
         req = GotoRequest(
@@ -242,37 +242,37 @@ class ApiClient:
             antennas=((antennas[0], antennas[1]) if antennas is not None else None),
             duration=duration,
             interpolation=method,
-            body_yaw=body_yaw,
+            body_rotation=body_rotation,
         )
         response = self._http_client.post(
             "/api/move/goto", content=req.model_dump_json(exclude_none=True)
         )
         response.raise_for_status()
-        move_uuid = MoveUUID.model_validate(response.json())
+        move_id = response.json()["id"]
         # Create the event immediately to avoid race condition with WebSocket updates
-        self._goto_wait_events[move_uuid.uuid] = threading.Event()
-        return move_uuid
+        self._goto_wait_events[move_id] = threading.Event()
+        return move_id
 
     def wait_for_move_completion(
-        self, move_uuid: MoveUUID, timeout: Optional[float] = None
+        self, move_id: MoveId, timeout: Optional[float] = None
     ) -> None:
         """Wait for the completion of a move.
 
         Args:
-            move_uuid: The UUID of the move to wait for.
+            move_id: The ID of the move to wait for.
             timeout: Maximum time to wait in seconds. If None, wait indefinitely.
 
         Raises:
             TimeoutError: If the move does not complete within the specified timeout.
 
         """
-        if move_uuid.uuid not in self._goto_wait_events:
-            raise ValueError(f"No ongoing move with UUID: {move_uuid.uuid}")
+        if move_id not in self._goto_wait_events:
+            raise ValueError(f"No ongoing move with ID: {move_id}")
 
-        event = self._goto_wait_events[move_uuid.uuid]
+        event = self._goto_wait_events[move_id]
         completed = event.wait(timeout)
         if not completed:
-            raise TimeoutError(f"Timeout waiting for move {move_uuid.uuid} to complete.")
+            raise TimeoutError(f"Timeout waiting for move {move_id} to complete.")
 
     def send_target(self, target: FullBodyTarget) -> None:
         """Send a target command to the robot via WebSocket.
@@ -305,18 +305,18 @@ class ApiClient:
         response = self._http_client.post(f"/api/motors/set_mode/{mode.value}")
         response.raise_for_status()
 
-    def get_automatic_body_yaw(self) -> bool:
+    def get_automatic_body_rotation(self) -> bool:
         """Get the automatic body yaw setting.
 
         Returns:
             True if automatic body yaw is enabled.
 
         """
-        response = self._http_client.get("/api/motors/automatic_body_yaw")
+        response = self._http_client.get("/api/motors/automatic_body_rotation")
         response.raise_for_status()
         return cast(bool, response.json())
 
-    def set_automatic_body_yaw(self, enabled: bool) -> None:
+    def set_automatic_body_rotation(self, enabled: bool) -> None:
         """Set the automatic body yaw setting.
 
         When enabled, the body yaw is automatically computed during IK
@@ -327,6 +327,6 @@ class ApiClient:
 
         """
         response = self._http_client.post(
-            f"/api/motors/automatic_body_yaw/{str(enabled).lower()}"
+            f"/api/motors/automatic_body_rotation/{str(enabled).lower()}"
         )
         response.raise_for_status()
