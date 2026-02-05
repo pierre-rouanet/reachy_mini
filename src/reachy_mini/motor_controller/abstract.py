@@ -43,6 +43,7 @@ class MotorControllerStatus:
     ready: bool = False
     last_alive: float | None = None
     control_loop_stats: dict[str, Any] = field(default_factory=dict)
+    automatic_body_yaw: bool = True
 
 
 class MotorController(ABC):
@@ -376,6 +377,7 @@ class MotorController(ABC):
         """
         self._status.error = self.error
         self._status.motor_control_mode = self.get_motor_control_mode()
+        self._status.automatic_body_yaw = self.head_kinematics.automatic_body_yaw
         return self._status
 
     # Present/Target joint positions

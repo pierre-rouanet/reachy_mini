@@ -18,7 +18,7 @@ import numpy.typing as npt
 from asgiref.sync import async_to_sync
 from scipy.spatial.transform import Rotation as R
 
-from reachy_mini.daemon.models import FullState, MotorControlMode
+from reachy_mini.daemon.models import MotorControlMode
 from reachy_mini.daemon.utils import daemon_check, is_local_camera_available
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.move import Move
@@ -167,6 +167,7 @@ class ReachyMini:
 
         Raises:
             ConnectionError: If not connected or connection is lost.
+
         """
         if self._loop is None or self._stream_client is None:
             raise ConnectionError("Not connected to daemon")
@@ -197,6 +198,7 @@ class ReachyMini:
         Returns:
             Dictionary with daemon status including state, simulation_enabled,
             error, motor_controller_status, wlan_ip, etc.
+
         """
         return self._daemon_status
 

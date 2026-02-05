@@ -86,6 +86,7 @@ class ApiManager:
             motors,
             move,
             state,
+            stream,
             volume,
         )
         from reachy_mini.daemon.api.routers import daemon as daemon_router
@@ -106,6 +107,7 @@ class ApiManager:
         router.include_router(motors.router)
         router.include_router(move.router)
         router.include_router(state.router)
+        router.include_router(stream.router)
         router.include_router(volume.router)
 
         # Wireless-only routes

@@ -38,11 +38,12 @@ This document tracks the ongoing refactoring effort to make the Reachy Mini code
 | Daemon cleanup | Done | Removed ZenohServer, WebSocket, media streaming from daemon |
 | IO module cleanup | Done | Removed deprecated websocket files (audio_ws, video_ws, ws_controller) |
 | Daemon architecture | Done | Split into MotorManager + ApiManager + WebRTCManager + MotionManager |
-| Shared data models | Not started | ApiManager & WebRTCManager share motor + media models |
-| FastAPI interface cleanup | Not started | |
-| Data model definitions | Not started | |
+| Shared data models | Done | `daemon/models/` with motor_state.py, motor_command.py, pose.py |
+| SDK client (StreamClient) | Done | Unified WebSocket streaming replaces ApiClient |
+| Goto support | Done | Goto commands via unified streaming protocol |
+| FastAPI interface cleanup | Done | Old WebSocket endpoints removed, unified /api/stream/ws |
 | WebRTC motor data streaming | Not started | Stream motor state/commands via WebRTC |
-| SDK compatibility verification | Blocked | ReachyMini client needs ZenohServer - will need new interface |
+| SDK compatibility verification | Done | ReachyMini uses StreamClient internally |
 
 ## Current Architecture
 
@@ -329,66 +330,108 @@ Goal: Ensure each manager only deals with its scope, no leftover entanglements.
 **Resilience test added:**
 - `test_daemon_faulty_audio_backend_still_running` - verifies daemon continues in RUNNING state when audio fails to initialize (audio is non-critical)
 
+### Step 10: Shared Data Models (DONE)
+Goal: Create shared data models for ApiManager and WebRTCManager to ensure consistent data formats.
+
+**Files created:**
+- `src/reachy_mini/daemon/models/__init__.py` - Public exports
+- `src/reachy_mini/daemon/models/motor_state.py` - State models:
+  - `MotorControlMode` - Enum (enabled/disabled/gravity_compensation)
+  - `FullState` - Complete robot state (head_pose, head_joints, antennas, body_yaw, imu)
+  - `MotorStatus`, `DoAInfo`, `SensorState`, `JointPositions`
+- `src/reachy_mini/daemon/models/motor_command.py` - Command models:
+  - `FullBodyTarget` - Target for set_target (head pose/joints, antennas, body_yaw)
+  - `GotoRequest` - Interpolated movement request (pose, duration, interpolation method)
+  - `MoveUUID` - Unique identifier for tracking move completion
+  - `MotorControlCommand` - Motor mode change command
+- `src/reachy_mini/daemon/models/pose.py` - Pose representations:
+  - `XYZRPYPose` - Position + Euler angles
+  - `Matrix4x4Pose` - 4x4 transformation matrix
+  - `AnyPose` - Union type for flexibility
+  - `pose_from_numpy()`, `pose_to_numpy()` - Conversion helpers
+
+**Benefits:**
+- Single source of truth for data schemas
+- Pydantic models with validation
+- Consistent format across HTTP API and WebRTC
+- Easy numpy conversion for kinematics
+
+### Step 11: SDK Client with StreamClient (DONE)
+Goal: Replace Zenoh-based communication with unified WebSocket streaming.
+
+**Files created/modified:**
+- `src/reachy_mini/sdk_client/stream_client.py` - Unified WebSocket client:
+  - `connect()` / `disconnect()` - Connection management
+  - `subscribe()` - Configure state streaming (fields, sensors, frequency)
+  - `get_state()` → `FullState` - Real-time state via unified streaming
+  - `get_status()` → `dict` - Motor status via streaming
+  - `get_daemon_status()` → `dict` - Full daemon status via streaming
+  - `set_target()` - Fire-and-forget target updates
+  - `goto()` / `goto_async()` - Blocking and async interpolated movement
+  - `wait_for_goto()` / `cancel()` - Async move management
+  - `set_mode()` - Motor control mode
+  - `set_automatic_body_rotation()` / `get_automatic_body_rotation()`
+
+- `src/reachy_mini/sdk_client/reachy_mini.py` - Updated to use StreamClient:
+  - Runs StreamClient in background thread with asyncio event loop
+  - `_run_async()` helper for cross-thread async execution
+  - All public methods remain synchronous for API compatibility
+
+- `src/reachy_mini/daemon/api/routers/stream.py` - Unified WebSocket endpoint:
+  - `/api/stream/ws` - Single endpoint for all streaming
+  - Bidirectional: commands (client→server) and events (server→client)
+  - Supports state streaming, goto, target, mode, status commands
+
+**Old endpoints removed:**
+- `/api/state/ws/full` - Replaced by unified stream
+- `/api/move/ws/set_target` - Replaced by unified stream
+- `/api/move/ws/updates` - Replaced by unified stream
+
+**Streaming protocol (defined in `daemon/streaming/messages.py`):**
+- Commands: `target`, `goto`, `set_mode`, `cancel`, `subscribe`, `get_status`, `get_daemon_status`, `set_automatic_body_rotation`
+- Events: `state`, `goto_started`, `goto_done`, `mode_changed`, `cancelled`, `error`, `status`, `daemon_status`, `automatic_body_rotation_changed`
+
+**Shared models (in `daemon/models/`):**
+- `DaemonStatus` - Consolidated Pydantic model for daemon status
+- `FullState`, `FullBodyTarget`, `GotoRequest` - Motor state/command models
+
 ---
 
 ## Test Status
 
-After refactoring: **Daemon tests: 4 passed, 2 failed (expected)**
+After StreamClient refactoring: **All daemon and HTTP client tests pass**
 
 ```bash
-uv run pytest tests/test_daemon.py -v
-# test_daemon_start_stop PASSED
-# test_daemon_faulty_motor_controller_fastapi_still_running PASSED
-# test_daemon_faulty_audio_backend_still_running PASSED
-# test_daemon_multiple_start_stop PASSED
-# test_daemon_client_disconnection FAILED  # Requires ZenohServer (removed)
-# test_daemon_early_stop FAILED            # Requires ZenohServer (removed)
+.venv/bin/python -m pytest tests/test_daemon.py tests/test_http_only_client.py -v
+# 18 tests pass (7 daemon + 11 HTTP client)
 ```
 
-| Category | Count | Reason |
-|----------|-------|--------|
-| MuJoCo not installed | 4 | Optional dependency |
-| ZenohServer removed | 2 (daemon) + others | Expected - Zenoh interfaces removed in Step 5 |
-| Placo kinematics | 1 | Optional dependency |
-| Audio/Video backends | 8 | Sounddevice deprecated, WebRTC setup |
-
-**Note**: Tests using `ReachyMini` client (`test_daemon_client_disconnection`, `test_daemon_early_stop`) fail because they connect via Zenoh (port 7447), which was intentionally removed. These will pass once interfaces are re-added with proper abstraction.
+**Note**: Tests now use `ReachyMini` with `StreamClient` internally.
 
 ---
 
 ## Next Steps
 
-### Shared Data Models
-ApiManager (FastAPI) and WebRTCManager both need to expose data. They should share the same data models to ensure consistency:
+### WebRTC Motor Data Streaming
+Enable real-time motor state/command streaming via WebRTC data channels for remote clients.
 
-```
-daemon/
-├── models/
-│   ├── motor_state.py    # Joint positions, poses, control mode
-│   ├── motor_command.py  # Target positions, control commands
-│   ├── media.py          # Audio/video frame metadata, streaming config
-│   └── ...
-├── api_manager.py        # Uses shared models for HTTP/WS
-└── webrtc_manager.py     # Uses shared models for real-time streaming
-```
+**Goals:**
+- Stream `FullState` via WebRTC data channel (alternative to WebSocket)
+- Accept `FullBodyTarget` commands via WebRTC data channel
+- Share same data models and streaming protocol as WebSocket
 
-**Motor data models:**
-- Joint positions (current/target)
-- Head pose (4x4 matrix or position + orientation)
-- Antenna positions
-- Control mode (enabled/disabled/gravity compensation)
-- Status/errors
+**Implementation:**
+- Add data channel handling to `WebRTCManager`
+- Reuse streaming protocol from `daemon/streaming/messages.py`
+- Support both WebSocket and WebRTC transports for motor data
 
-**Media data models:**
-- Video frame metadata (resolution, format, timestamp)
-- Audio sample metadata (sample rate, channels, format)
-- Streaming configuration
+### IMU Data Streaming
+Add IMU data to the streaming protocol for wireless version support.
 
-This will enable:
-- Consistent data format across HTTP API and WebRTC
-- Single source of truth for data schemas
-- Easier client implementation (same models for both transports)
-- Clear contract between daemon internals and external interfaces
+**Goals:**
+- Stream IMU data via unified WebSocket/WebRTC (accelerometer, gyroscope, quaternion)
+- Include IMU in `FullState.sensors` field
+- IMU only available in wireless version
 
 ---
 

@@ -13,15 +13,14 @@ Two versions are provided:
 import asyncio
 import json
 import logging
-import threading
-from typing import Any, Callable, List, Optional, Union
+from typing import Any, List, Optional, Union
 
 import numpy as np
 import numpy.typing as npt
 import websockets
 from websockets.asyncio.client import ClientConnection
 
-from reachy_mini.daemon.models import FullBodyTarget, FullState, MotorControlMode
+from reachy_mini.daemon.models import FullState, MotorControlMode
 from reachy_mini.daemon.models.pose import pose_from_numpy
 from reachy_mini.daemon.streaming.messages import MoveId, MoveStatus
 from reachy_mini.utils.interpolation import InterpolationTechnique
@@ -45,6 +44,7 @@ class StreamClient:
             async for state in client.state_stream():
                 target = compute_target(state)
                 await client.set_target(body_rotation=target)
+
     """
 
     def __init__(
@@ -57,6 +57,7 @@ class StreamClient:
         Args:
             host: The daemon host address.
             port: The daemon HTTP port.
+
         """
         self.logger = logging.getLogger(__name__)
         self.host = host
@@ -77,6 +78,7 @@ class StreamClient:
 
         Raises:
             ConnectionError: If unable to connect.
+
         """
         try:
             self._ws = await asyncio.wait_for(
@@ -184,6 +186,7 @@ class StreamClient:
 
         Returns:
             Status dictionary with motor_ready, control_mode, available_sensors.
+
         """
         self._event_handlers["status"] = asyncio.Queue()
         try:
@@ -211,6 +214,7 @@ class StreamClient:
             fields: State fields to include (None = all).
             sensors: Sensor types to include.
             frequency: Update frequency in Hz (max 100).
+
         """
         cmd = {"cmd": "subscribe", "frequency": frequency}
         if fields is not None:
@@ -224,6 +228,7 @@ class StreamClient:
 
         Args:
             mode: The desired motor mode.
+
         """
         self._event_handlers["mode_changed"] = asyncio.Queue()
         try:
@@ -246,6 +251,7 @@ class StreamClient:
             head: 4x4 pose matrix for head target.
             antennas: [right_angle, left_angle] in radians.
             body_rotation: Body rotation angle in radians.
+
         """
         target: dict[str, Any] = {}
         if head is not None:
@@ -276,6 +282,7 @@ class StreamClient:
 
         Returns:
             Final move status.
+
         """
         request: dict[str, Any] = {
             "duration": duration,
@@ -323,6 +330,7 @@ class StreamClient:
 
         Returns:
             Move ID for tracking.
+
         """
         import uuid
 
@@ -358,6 +366,7 @@ class StreamClient:
 
         Raises:
             TimeoutError: If move doesn't complete in time.
+
         """
         if move_id not in self._pending_gotos:
             raise ValueError(f"Unknown move ID: {move_id}")
@@ -374,6 +383,7 @@ class StreamClient:
 
         Args:
             move_id: The move ID to cancel.
+
         """
         self._event_handlers["cancelled"] = asyncio.Queue()
         try:
@@ -396,6 +406,7 @@ class StreamClient:
         Raises:
             TimeoutError: If no state received within timeout.
             ConnectionError: If WebSocket connection is closed.
+
         """
         # Check if WebSocket is still connected
         if self._ws is None:
@@ -414,6 +425,7 @@ class StreamClient:
         Example:
             async for state in client.state_stream():
                 print(state.head_pose)
+
         """
         while True:
             yield await self._state_queue.get()
@@ -440,6 +452,7 @@ class StreamClient:
 
         Args:
             enabled: Whether to enable automatic body rotation.
+
         """
         self._event_handlers["automatic_body_rotation_changed"] = asyncio.Queue()
         try:
@@ -455,6 +468,7 @@ class StreamClient:
 
         Returns:
             True if automatic body rotation is enabled.
+
         """
         status = await self.get_status()
         return status.get("automatic_body_rotation", False)
@@ -465,6 +479,7 @@ class StreamClient:
         Returns:
             Dictionary with full daemon status including state, simulation_enabled,
             error, motor_controller_status, wlan_ip, version, etc.
+
         """
         self._event_handlers["daemon_status"] = asyncio.Queue()
         try:

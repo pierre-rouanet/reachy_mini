@@ -4,20 +4,27 @@ This exposes:
 - goto
 - play (wake_up, goto_sleep)
 - stop running moves
-- set_target and streaming set_target
+- set_target (HTTP endpoint)
+- raw/write (WebSocket for low-level motor access)
+
+For real-time target streaming, use the unified WebSocket endpoint at /api/stream/ws.
 """
 
 import asyncio
-import json
 from typing import Any, Coroutine
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from huggingface_hub.errors import RepositoryNotFoundError
 
 from reachy_mini.daemon.models import FullBodyTarget, GotoRequest
-from reachy_mini.daemon.streaming.messages import GotoDoneEvent, GotoStartedEvent, MoveId, MoveStatus
+from reachy_mini.daemon.streaming.messages import (
+    GotoDoneEvent,
+    GotoStartedEvent,
+    MoveId,
+    MoveStatus,
+)
 from reachy_mini.motion.manager import MotionManager
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.motor_controller.abstract import MotorController
@@ -30,7 +37,6 @@ from ..dependencies import (
 
 move_tasks: dict[MoveId, asyncio.Task[None]] = {}
 move_completed: dict[MoveId, MoveStatus] = {}  # Cache of completed move statuses
-move_listeners: list[WebSocket] = []
 
 # Max number of completed moves to cache (prevents unbounded growth)
 _MAX_COMPLETED_CACHE = 100
@@ -66,37 +72,21 @@ def create_move_task(
 
     Raises:
         DuplicateMoveIdError: If the provided move_id is already in use.
+
     """
     if move_id is None:
         move_id = str(uuid4())
     elif is_move_id_in_progress(move_id):
         raise DuplicateMoveIdError(move_id)
 
-    async def notify_listeners(message: str, details: str = "") -> None:
-        for ws in move_listeners:
-            try:
-                await ws.send_json(
-                    {
-                        "type": message,
-                        "id": move_id,
-                        "details": details,
-                    }
-                )
-            except (RuntimeError, WebSocketDisconnect):
-                move_listeners.remove(ws)
-
     async def wrap_coro() -> None:
         status = MoveStatus.Completed
         try:
-            await notify_listeners("move_started")
             await coro
-            await notify_listeners("move_completed")
         except asyncio.CancelledError:
             status = MoveStatus.Cancelled
-            await notify_listeners("move_cancelled")
-        except Exception as e:
+        except Exception:
             status = MoveStatus.Failed
-            await notify_listeners("move_failed", details=str(e))
         finally:
             move_tasks.pop(move_id, None)
             # Cache the final status for HTTP polling
@@ -216,21 +206,6 @@ async def stop_move(move_id: str) -> GotoDoneEvent:
     return await stop_move_task(move_id)
 
 
-@router.websocket("/ws/updates")
-async def ws_move_updates(
-    websocket: WebSocket,
-) -> None:
-    """WebSocket route to stream move updates."""
-    await websocket.accept()
-    try:
-        move_listeners.append(websocket)
-        while True:
-            _ = await websocket.receive_text()
-    except WebSocketDisconnect:
-        move_listeners.remove(websocket)
-
-
-# --- FullBodyTarget streaming and single set_target ---
 @router.post("/set_target")
 async def set_target(
     target: FullBodyTarget,
@@ -255,27 +230,6 @@ async def set_target(
         motor_controller.set_target_body_yaw(target.body_rotation)  # API uses body_rotation, internal uses body_yaw
 
     return {"status": "ok"}
-
-
-@router.websocket("/ws/set_target")
-async def ws_set_target(
-    websocket: WebSocket, motor_controller: MotorController = Depends(ws_get_motor_controller)
-) -> None:
-    """WebSocket route to stream FullBodyTarget set_target calls."""
-    await websocket.accept()
-    try:
-        while True:
-            data = await websocket.receive_text()
-            try:
-                target = FullBodyTarget.model_validate_json(data)
-                await set_target(target, motor_controller)
-
-            except Exception as e:
-                await websocket.send_text(
-                    json.dumps({"status": "error", "detail": str(e)})
-                )
-    except WebSocketDisconnect:
-        pass
 
 
 @router.websocket("/ws/raw/write")

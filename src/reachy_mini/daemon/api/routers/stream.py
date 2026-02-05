@@ -9,7 +9,6 @@ Events (server → client): state, goto_started, goto_done, mode_changed, cancel
 
 import asyncio
 import time
-from typing import Callable
 
 import numpy as np
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -25,7 +24,6 @@ from reachy_mini.daemon.streaming import (
     GetStatusCommand,
     GotoCommand,
     GotoDoneEvent,
-    GotoStartedEvent,
     ModeChangedEvent,
     MoveStatus,
     SetAutomaticBodyRotationCommand,
@@ -40,7 +38,7 @@ from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.motion.manager import MotionManager
 from reachy_mini.motor_controller.abstract import MotorController
 
-from ..dependencies import get_audio, ws_get_motor_controller
+from ..dependencies import ws_get_motor_controller
 from .move import (
     DuplicateMoveIdError,
     create_move_task,
@@ -216,7 +214,7 @@ async def unified_stream(
             await send_event(GotoDoneEvent(id=move_id, status=status))
         except asyncio.CancelledError:
             await send_event(GotoDoneEvent(id=move_id, status=MoveStatus.Cancelled))
-        except Exception as e:
+        except Exception:
             await send_event(GotoDoneEvent(id=move_id, status=MoveStatus.Failed))
         finally:
             pending_gotos.pop(move_id, None)

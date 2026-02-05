@@ -9,7 +9,7 @@ The Streaming API provides real-time bidirectional communication with Reachy Min
 ### WebSocket
 
 ```
-ws://<host>:8000/api/stream
+ws://<host>:8000/api/stream/ws
 ```
 
 ### WebRTC Data Channel
@@ -253,7 +253,63 @@ Request daemon/motor status (one-time, not streaming).
   "event": "status",
   "motor_ready": true,
   "control_mode": "enabled",
-  "available_sensors": ["doa", "imu"]
+  "available_sensors": ["doa", "imu"],
+  "automatic_body_rotation": true
+}
+```
+
+---
+
+### Set Automatic Body Rotation
+
+Enable or disable automatic body rotation during IK.
+
+```json
+{
+  "cmd": "set_automatic_body_rotation",
+  "enabled": true
+}
+```
+
+**Response:**
+
+```json
+{"event": "automatic_body_rotation_changed", "enabled": true}
+```
+
+---
+
+### Get Daemon Status
+
+Request full daemon status including state, version, and motor controller status.
+
+```json
+{
+  "cmd": "get_daemon_status"
+}
+```
+
+**Response:**
+
+```json
+{
+  "event": "daemon_status",
+  "robot_name": "reachy_mini",
+  "state": "running",
+  "wireless_version": true,
+  "desktop_app_daemon": false,
+  "simulation_enabled": false,
+  "mockup_sim_enabled": false,
+  "motor_controller_status": {
+    "motor_control_mode": "enabled",
+    "error": null,
+    "ready": true,
+    "control_loop_stats": {},
+    "automatic_body_yaw": true
+  },
+  "error": null,
+  "wlan_ip": "192.168.1.100",
+  "version": "1.2.13"
 }
 ```
 
@@ -383,7 +439,7 @@ import json
 import websockets
 
 async def teleoperate():
-    async with websockets.connect("ws://localhost:8000/api/stream") as ws:
+    async with websockets.connect("ws://localhost:8000/api/stream/ws") as ws:
         # Enable motors
         await ws.send(json.dumps({"cmd": "set_mode", "mode": "enabled"}))
         response = json.loads(await ws.recv())
@@ -425,7 +481,7 @@ import json
 import websockets
 
 async def dance():
-    async with websockets.connect("ws://localhost:8000/api/stream") as ws:
+    async with websockets.connect("ws://localhost:8000/api/stream/ws") as ws:
         # Enable motors
         await ws.send(json.dumps({"cmd": "set_mode", "mode": "enabled"}))
         await ws.recv()  # mode_changed
@@ -464,7 +520,7 @@ import math
 import websockets
 
 async def animate():
-    async with websockets.connect("ws://localhost:8000/api/stream") as ws:
+    async with websockets.connect("ws://localhost:8000/api/stream/ws") as ws:
         # Enable and subscribe
         await ws.send(json.dumps({"cmd": "set_mode", "mode": "enabled"}))
         await ws.recv()
@@ -508,7 +564,7 @@ asyncio.run(animate())
 ### JavaScript: Browser Client
 
 ```javascript
-const ws = new WebSocket("ws://localhost:8000/api/stream");
+const ws = new WebSocket("ws://localhost:8000/api/stream/ws");
 
 ws.onopen = () => {
     // Enable motors

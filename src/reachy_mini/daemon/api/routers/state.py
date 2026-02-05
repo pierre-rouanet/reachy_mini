@@ -2,23 +2,21 @@
 
 This exposes:
 - basic get routes to retrieve most common fields
-- full state and streaming state updates
+- full state HTTP endpoint
+
+For real-time streaming, use the unified WebSocket endpoint at /api/stream/ws.
 """
 
-import asyncio
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends
 
 from reachy_mini.daemon.models import AnyPose, DoAData, FullState, pose_from_numpy
 from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.motor_controller.abstract import MotorController
 
-from ..dependencies import get_audio, get_motor_controller, ws_get_motor_controller
-
-# Maximum streaming frequency (Hz) - limited to avoid overwhelming clients
-MAX_STREAMING_FREQUENCY = 100.0
+from ..dependencies import get_audio, get_motor_controller
 
 router = APIRouter(prefix="/state")
 
@@ -97,6 +95,7 @@ async def get_full_state(
 
     Args:
         sensors: Comma-separated sensor types (e.g., "doa,imu") or "all" for all available.
+
     """
     result: dict[str, Any] = {}
 
@@ -153,47 +152,3 @@ async def get_full_state(
     return FullState.model_validate(result)
 
 
-@router.websocket("/ws/full")
-async def ws_full_state(
-    websocket: WebSocket,
-    frequency: float = 10.0,
-    with_head_pose: bool = True,
-    with_target_head_pose: bool = False,
-    with_head_joints: bool = False,
-    with_target_head_joints: bool = False,
-    with_body_rotation: bool = True,
-    with_target_body_rotation: bool = False,
-    with_antennas: bool = True,
-    with_target_antennas: bool = False,
-    with_passive_joints: bool = False,
-    sensors: str | None = None,
-    use_pose_matrix: bool = False,
-    motor_controller: MotorController = Depends(ws_get_motor_controller),
-) -> None:
-    """WebSocket endpoint to stream the full state of the robot.
-
-    Supports frequencies up to 100Hz for teleoperation use cases.
-    """
-    await websocket.accept()
-    period = 1.0 / min(frequency, MAX_STREAMING_FREQUENCY)
-
-    try:
-        while True:
-            full_state = await get_full_state(
-                with_head_pose=with_head_pose,
-                with_target_head_pose=with_target_head_pose,
-                with_head_joints=with_head_joints,
-                with_target_head_joints=with_target_head_joints,
-                with_body_rotation=with_body_rotation,
-                with_target_body_rotation=with_target_body_rotation,
-                with_antennas=with_antennas,
-                with_target_antennas=with_target_antennas,
-                with_passive_joints=with_passive_joints,
-                sensors=sensors,
-                use_pose_matrix=use_pose_matrix,
-                motor_controller=motor_controller,
-            )
-            await websocket.send_text(full_state.model_dump_json())
-            await asyncio.sleep(period)
-    except WebSocketDisconnect:
-        pass
