@@ -5,9 +5,8 @@ for all communication - state streaming and commands.
 
 This is the recommended client for real-time control and teleoperation.
 
-Two versions are provided:
-- StreamClient: Async client for use with asyncio
-- SyncStreamClient: Sync wrapper for use in regular Python code
+StreamClient is an async client for use with asyncio. For synchronous usage,
+use the ReachyMini class which wraps StreamClient with a background event loop.
 """
 
 import asyncio
