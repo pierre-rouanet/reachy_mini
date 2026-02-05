@@ -27,8 +27,8 @@ GET /state/full
 | `with_target_head_joints` | bool | false | Include target joint positions |
 | `with_antennas` | bool | true | Include antenna positions |
 | `with_target_antennas` | bool | false | Include target antenna positions |
-| `with_body_rotation` | bool | true | Include body yaw angle |
-| `with_target_body_rotation` | bool | false | Include target body yaw |
+| `with_body_rotation` | bool | true | Include body rotation angle |
+| `with_target_body_rotation` | bool | false | Include target body rotation |
 | `sensors` | string | null | Comma-separated sensor types, or `all` |
 | `use_pose_matrix` | bool | false | Use 4x4 matrix instead of XYZRPY |
 
@@ -284,7 +284,7 @@ POST /move/goto
 | `head_pose` | list[float] | no* | Target pose [x, y, z, roll, pitch, yaw] |
 | `head_joints` | list[float] | no* | Target joint positions |
 | `antennas` | tuple[float, float] | no | Target antenna positions |
-| `body_rotation` | float | no | Target body yaw |
+| `body_rotation` | float | no | Target body rotation |
 | `duration` | float | yes | Movement duration in seconds |
 | `interpolation` | string | no | `"linear"` (default) or `"minimum_jerk"` |
 
@@ -363,7 +363,7 @@ GET /move/goto/{move_id}
 Cancel a running goto movement.
 
 ```
-DELETE /move/goto/{move_id}
+POST /move/goto/{move_id}/cancel
 ```
 
 **Response:** `GotoDoneEvent`
@@ -455,7 +455,7 @@ move_id = response.json()["id"]
 
 # Wait a bit then cancel
 time.sleep(1.0)
-requests.delete(f"{BASE}/move/goto/{move_id}")
+requests.post(f"{BASE}/move/goto/{move_id}/cancel")
 print("Movement cancelled")
 ```
 
@@ -531,7 +531,7 @@ These models are shared between HTTP and Streaming APIs.
 | Set target | `POST /move/set_target` | `{"cmd": "target", ...}` |
 | Goto blocking | `POST /move/goto?wait=true` | `{"cmd": "goto", ...}` (no id) |
 | Goto async | `POST /move/goto` + poll status | `{"cmd": "goto", ..., "id": ...}` |
-| Cancel goto | `DELETE /move/goto/{id}` | `{"cmd": "cancel", "id": ...}` |
+| Cancel goto | `POST /move/goto/{id}/cancel` | `{"cmd": "cancel", "id": ...}` |
 | Set motor mode | `POST /motors/set_mode/{mode}` | `{"cmd": "set_mode", ...}` |
 | Get sensors | `GET /state/sensors/{type}` | Include in `subscribe` |
 

@@ -176,6 +176,14 @@ Non-blocking goto. Provide an `id` to receive immediate confirmation and complet
 {"event": "goto_done", "id": "move-123", "status": "completed"}
 ```
 
+**ID uniqueness:** The `id` must be unique among in-progress moves. Reusing an active ID returns:
+
+```json
+{"event": "error", "message": "Move ID 'move-123' is already in use", "code": "DUPLICATE_MOVE_ID"}
+```
+
+IDs can be reused after the move completes.
+
 ---
 
 ### Set Mode
@@ -360,6 +368,7 @@ An error occurred.
 | `INVALID_COMMAND` | Unknown or malformed command |
 | `INVALID_TARGET` | Target out of range or conflicting |
 | `GOTO_CONFLICT` | Goto already in progress (for blocking) |
+| `DUPLICATE_MOVE_ID` | Async goto with an ID already in use |
 | `UNKNOWN_MOVE_ID` | Cancel for unknown move ID |
 
 ---
@@ -567,7 +576,7 @@ document.addEventListener("click", () => {
 | Set target | `POST /move/set_target` | `{"cmd": "target", ...}` |
 | Goto blocking | `POST /move/goto?wait=true` | `{"cmd": "goto", ...}` (no id) |
 | Goto async | `POST /move/goto` + poll status | `{"cmd": "goto", ..., "id": ...}` |
-| Cancel goto | `DELETE /move/goto/{id}` | `{"cmd": "cancel", "id": ...}` |
+| Cancel goto | `POST /move/goto/{id}/cancel` | `{"cmd": "cancel", "id": ...}` |
 | Set motor mode | `POST /motors/set_mode/{mode}` | `{"cmd": "set_mode", ...}` |
 
 **Use HTTP when:**

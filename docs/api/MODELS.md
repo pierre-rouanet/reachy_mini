@@ -362,7 +362,9 @@ Start interpolated movement.
 ```
 
 - With `id`: async mode (returns `goto_started` immediately, then `goto_done`)
-- Without `id`: blocking mode (returns `goto_done` when complete)
+- Without `id`: blocking mode (server generates ID internally, returns `goto_done` when complete)
+
+**ID uniqueness:** The `id` must be unique among in-progress moves. Reusing an ID that's currently in progress returns an `ErrorEvent` with code `DUPLICATE_MOVE_ID`. IDs can be reused after the move completes.
 
 #### SetModeCommand
 
