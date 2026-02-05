@@ -39,9 +39,38 @@ _MAX_COMPLETED_CACHE = 100
 router = APIRouter(prefix="/move")
 
 
-def create_move_task(coro: Coroutine[Any, Any, None]) -> GotoStartedEvent:
-    """Create a new move task using async task coroutine."""
-    move_id: MoveId = str(uuid4())
+class DuplicateMoveIdError(Exception):
+    """Raised when a move ID is already in use."""
+
+    def __init__(self, move_id: MoveId) -> None:
+        self.move_id = move_id
+        super().__init__(f"Move ID '{move_id}' is already in use")
+
+
+def is_move_id_in_progress(move_id: MoveId) -> bool:
+    """Check if a move ID is currently in progress."""
+    return move_id in move_tasks
+
+
+def create_move_task(
+    coro: Coroutine[Any, Any, None], move_id: MoveId | None = None
+) -> GotoStartedEvent:
+    """Create a new move task using async task coroutine.
+
+    Args:
+        coro: The coroutine to run as the move task.
+        move_id: Optional client-provided move ID. If None, a UUID is generated.
+
+    Returns:
+        GotoStartedEvent with the move ID.
+
+    Raises:
+        DuplicateMoveIdError: If the provided move_id is already in use.
+    """
+    if move_id is None:
+        move_id = str(uuid4())
+    elif is_move_id_in_progress(move_id):
+        raise DuplicateMoveIdError(move_id)
 
     async def notify_listeners(message: str, details: str = "") -> None:
         for ws in move_listeners:

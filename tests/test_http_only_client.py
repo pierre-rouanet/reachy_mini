@@ -509,3 +509,36 @@ async def test_http_only_client_motor_status() -> None:
 
         finally:
             client.disconnect()
+
+
+def test_duplicate_move_id_validation() -> None:
+    """Test that duplicate move IDs are rejected only while in progress."""
+    from reachy_mini.daemon.api.routers.move import (
+        DuplicateMoveIdError,
+        is_move_id_in_progress,
+        move_completed,
+        move_tasks,
+    )
+
+    # Clean state
+    move_tasks.clear()
+    move_completed.clear()
+
+    # New ID should not be in progress
+    assert not is_move_id_in_progress("test-id-123")
+
+    # Simulate an active move
+    move_tasks["test-id-123"] = None  # type: ignore
+
+    # Now it should be in progress
+    assert is_move_id_in_progress("test-id-123")
+
+    # Clean up active, add to completed
+    del move_tasks["test-id-123"]
+    move_completed["test-id-123"] = MoveStatus.Completed
+
+    # No longer in progress (completed moves don't block reuse)
+    assert not is_move_id_in_progress("test-id-123")
+
+    # Clean up
+    move_completed.clear()

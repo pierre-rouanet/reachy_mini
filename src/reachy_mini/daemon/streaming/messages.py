@@ -54,14 +54,17 @@ class GotoCommand(BaseModel):
     """Start an interpolated movement.
 
     If 'id' is provided: async mode - returns GotoStartedEvent immediately,
-    then GotoDoneEvent when complete.
+    then GotoDoneEvent when complete. The ID must be unique - reusing an
+    active or recently completed move ID returns an ErrorEvent with code
+    'DUPLICATE_MOVE_ID'.
 
-    If 'id' is omitted: blocking mode - returns GotoDoneEvent when complete.
+    If 'id' is omitted: blocking mode - server generates a UUID internally,
+    returns GotoDoneEvent when complete.
     """
 
     cmd: Literal["goto"] = "goto"
     request: GotoRequest
-    id: MoveId | None = None  # Provide to enable async mode
+    id: MoveId | None = None  # Provide to enable async mode (must be unique)
 
 
 class SetModeCommand(BaseModel):
