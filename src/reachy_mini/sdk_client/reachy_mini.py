@@ -102,6 +102,7 @@ class ReachyMini:
         self._loop_thread: Optional[threading.Thread] = None
         self._stream_client: Optional[StreamClient] = None
         self._stop_event = threading.Event()
+        self._daemon_status: Dict[str, Any] = {}  # Set by _initialize_client
 
         self.host, self.port = self._initialize_client(host, port, timeout)
         self.set_automatic_body_rotation(automatic_body_rotation)
@@ -286,10 +287,10 @@ class ReachyMini:
                     )
 
         return MediaManager(
-            use_sim=self._daemon_status.get("simulation_enabled", False),
+            use_sim=bool(self._daemon_status.get("simulation_enabled", False)),
             backend=mbackend,
             log_level=log_level,
-            signalling_host=self._daemon_status.get("wlan_ip"),
+            signalling_host=self._daemon_status.get("wlan_ip") or "localhost",
         )
 
     def _start_event_loop(self) -> None:
@@ -328,8 +329,15 @@ class ReachyMini:
                 future.result(timeout=5.0)
 
                 # Get daemon status for media configuration
-                future = asyncio.run_coroutine_threadsafe(client.get_daemon_status(), self._loop)
-                self._daemon_status = future.result(timeout=5.0)
+                status_future = asyncio.run_coroutine_threadsafe(
+                    client.get_daemon_status(), self._loop
+                )
+                status_result = status_future.result(timeout=5.0)
+                if not status_result or "state" not in status_result:
+                    raise ConnectionError(
+                        f"Failed to get daemon status from {try_host}:{port}"
+                    )
+                self._daemon_status = status_result
 
                 self._stream_client = client
                 self.logger.info("Connected to daemon at %s:%d", try_host, port)
@@ -398,18 +406,6 @@ class ReachyMini:
             self.set_target_body_rotation(body_rotation)
 
         self._last_head_pose = head
-
-        # record: Dict[str, float | List[float] | List[List[float]]] = {
-        #     "time": time.time(),
-        #     "body_rotation": body_rotation if body_rotation is not None else 0.0,
-        # }
-        # if head is not None:
-        #     record["head"] = head.tolist()
-        # if antennas is not None:
-        #     record["antennas"] = list(antennas)
-        # if body_rotation is not None:
-        #     record["body_rotation"] = body_rotation
-        # self._set_record_data(record)
 
     def goto_target(
         self,
@@ -694,7 +690,8 @@ class ReachyMini:
         assert state is not None, "Could not get current head pose from the daemon."
         head_pose = state.head_pose
         assert head_pose is not None, "Head pose data is None."
-        return head_pose.to_numpy()
+        result: npt.NDArray[np.float64] = head_pose.to_numpy()
+        return result
 
     def set_target_head_pose(self, pose: npt.NDArray[np.float64]) -> None:
         """Set the head pose to a specific 4x4 matrix.

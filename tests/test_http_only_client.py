@@ -9,6 +9,7 @@ for real-time state streaming and lower latency target updates.
 This module also contains pytest tests that verify HTTP-only API completeness.
 """
 
+import asyncio
 import logging
 import time
 from typing import Any, List, Optional, Union, cast
@@ -626,6 +627,33 @@ async def test_stream_client() -> None:
             # Wait for completion
             status = await client.wait_for_goto(move_id, timeout=5.0)
             assert status == MoveStatus.Completed
+
+            await client.disable_motors()
+
+
+@pytest.mark.asyncio
+async def test_stream_client_head_joints() -> None:
+    """Test StreamClient set_target with head_joints parameter."""
+    from reachy_mini.sdk_client.stream_client import StreamClient
+
+    async with Daemon(_TEST_CONFIG):
+        async with StreamClient() as client:
+            await client.enable_motors()
+            await client.subscribe(fields=["head_joints"], frequency=20)
+
+            # Get initial state
+            state = await client.get_state()
+            assert state.head_joints is not None
+            initial_joints = list(state.head_joints)
+
+            # Test set_target with head_joints (6 stewart platform joints)
+            target_joints = [j + 0.01 for j in initial_joints]
+            await client.set_target(head_joints=target_joints)
+
+            # Verify state was updated
+            await asyncio.sleep(0.1)
+            state = await client.get_state()
+            assert state.head_joints is not None
 
             await client.disable_motors()
 

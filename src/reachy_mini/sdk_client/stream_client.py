@@ -249,13 +249,18 @@ class StreamClient:
     async def set_target(
         self,
         head: Optional[npt.NDArray[np.float64]] = None,
+        head_joints: Optional[List[float]] = None,
         antennas: Optional[Union[npt.NDArray[np.float64], List[float]]] = None,
         body_rotation: Optional[float] = None,
     ) -> None:
         """Set immediate target position (fire-and-forget).
 
+        For head control, use either head (task-space) OR head_joints (joint-space),
+        not both. If both are provided, head (task-space) takes precedence.
+
         Args:
-            head: 4x4 pose matrix for head target.
+            head: 4x4 pose matrix for head target (task-space control).
+            head_joints: 6 stewart platform joint positions in radians (joint-space control).
             antennas: [right_angle, left_angle] in radians.
             body_rotation: Body rotation angle in radians.
 
@@ -263,6 +268,8 @@ class StreamClient:
         target: dict[str, Any] = {}
         if head is not None:
             target["head_pose"] = pose_from_numpy(head).model_dump()
+        elif head_joints is not None:
+            target["head_joints"] = head_joints
         if antennas is not None:
             target["antennas"] = [antennas[0], antennas[1]]
         if body_rotation is not None:
