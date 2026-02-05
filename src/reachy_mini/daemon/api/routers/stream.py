@@ -7,13 +7,19 @@ Commands (client → server): target, goto, set_mode, cancel, subscribe, get_sta
 Events (server → client): state, goto_started, goto_done, mode_changed, cancelled, error, status
 """
 
+from __future__ import annotations
+
 import asyncio
 import time
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from reachy_mini.daemon.models import FullState, pose_from_numpy
+
+if TYPE_CHECKING:
+    from reachy_mini.daemon.daemon import Daemon
 from reachy_mini.daemon.streaming import (
     AutomaticBodyRotationChangedEvent,
     CancelCommand,
@@ -53,9 +59,10 @@ router = APIRouter(prefix="/stream")
 MAX_STREAMING_FREQUENCY = 100.0
 
 
-def _get_daemon(websocket: WebSocket):
+def _get_daemon(websocket: WebSocket) -> Daemon:
     """Get the daemon instance from websocket app state."""
-    return websocket.app.state.daemon
+    daemon: Daemon = websocket.app.state.daemon
+    return daemon
 
 
 def _get_motion_manager(websocket: WebSocket) -> MotionManager:
@@ -81,7 +88,7 @@ async def _build_state(
     # Default to all fields if not specified
     include_all = fields is None
 
-    result: dict = {}
+    result: dict[str, Any] = {}
 
     if include_all or "control_mode" in fields:  # type: ignore
         result["control_mode"] = motor_controller.get_motor_control_mode().value
@@ -138,9 +145,9 @@ async def _build_state(
                 from reachy_mini.daemon.models import IMUData
 
                 result["sensors"]["imu"] = IMUData(
-                    accelerometer=tuple(imu_data["accelerometer"]),  # type: ignore
-                    gyroscope=tuple(imu_data["gyroscope"]),  # type: ignore
-                    quaternion=tuple(imu_data["quaternion"]),  # type: ignore
+                    accelerometer=tuple(imu_data["accelerometer"]),
+                    gyroscope=tuple(imu_data["gyroscope"]),
+                    quaternion=tuple(imu_data["quaternion"]),
                     temperature=imu_data.get("temperature"),
                 )
 
@@ -191,21 +198,21 @@ async def unified_stream(
     audio = _get_audio(websocket)
 
     # State streaming task and control
-    state_task: asyncio.Task | None = None
+    state_task: asyncio.Task[None] | None = None
     state_stop_event = asyncio.Event()
 
     # Track goto completions to send events
-    pending_gotos: dict[str, asyncio.Task] = {}
+    pending_gotos: dict[str, asyncio.Task[None]] = {}
 
     async def send_event(event: object) -> None:
         """Send an event to the client."""
         try:
             if hasattr(event, "model_dump_json"):
-                await websocket.send_text(event.model_dump_json())  # type: ignore
+                await websocket.send_text(event.model_dump_json())
         except Exception:
             pass  # Connection may be closed
 
-    async def handle_goto_completion(move_id: str, task: asyncio.Task) -> None:
+    async def handle_goto_completion(move_id: str, task: asyncio.Task[None]) -> None:
         """Wait for a goto to complete and send the done event."""
         try:
             await task
@@ -355,22 +362,8 @@ async def unified_stream(
 
             elif isinstance(msg, GetDaemonStatusCommand):
                 daemon = _get_daemon(websocket)
-                status = daemon.status()
-                # status is already a Pydantic DaemonStatus model with proper serialization
-                await send_event(
-                    DaemonStatusEvent(
-                        robot_name=status.robot_name,
-                        state=status.state,
-                        wireless_version=status.wireless_version,
-                        desktop_app_daemon=status.desktop_app_daemon,
-                        simulation_enabled=status.simulation_enabled,
-                        mockup_sim_enabled=status.mockup_sim_enabled,
-                        motor_controller_status=status.motor_controller_status,
-                        error=status.error,
-                        wlan_ip=status.wlan_ip,
-                        version=status.version,
-                    )
-                )
+                daemon_status = daemon.status()
+                await send_event(DaemonStatusEvent(**daemon_status.model_dump()))
 
     except WebSocketDisconnect:
         pass

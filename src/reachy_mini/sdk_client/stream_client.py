@@ -13,7 +13,10 @@ Two versions are provided:
 import asyncio
 import json
 import logging
-from typing import Any, List, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Union
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 import numpy as np
 import numpy.typing as npt
@@ -66,8 +69,8 @@ class StreamClient:
 
         self._ws: Optional[ClientConnection] = None
         self._state_queue: asyncio.Queue[FullState] = asyncio.Queue()
-        self._event_handlers: dict[str, asyncio.Queue] = {}
-        self._receive_task: Optional[asyncio.Task] = None
+        self._event_handlers: dict[str, asyncio.Queue[Any]] = {}
+        self._receive_task: Optional[asyncio.Task[None]] = None
         self._pending_gotos: dict[MoveId, asyncio.Future[MoveStatus]] = {}
 
     async def connect(self, timeout: float = 5.0) -> None:
@@ -109,11 +112,16 @@ class StreamClient:
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Any,
+    ) -> None:
         """Async context manager exit."""
         await self.disconnect()
 
-    async def _send(self, cmd: dict) -> None:
+    async def _send(self, cmd: dict[str, Any]) -> None:
         """Send a command to the server."""
         if not self._ws:
             raise ConnectionError("Not connected")
@@ -170,9 +178,9 @@ class StreamClient:
 
     async def _wait_for_event(
         self, event_type: str, timeout: Optional[float] = None
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Wait for a specific event type."""
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
         self._event_handlers[event_type] = queue
         try:
             return await asyncio.wait_for(queue.get(), timeout=timeout)
@@ -416,7 +424,7 @@ class StreamClient:
             raise ConnectionError("WebSocket connection is closed")
         return await asyncio.wait_for(self._state_queue.get(), timeout=5.0)
 
-    async def state_stream(self):
+    async def state_stream(self) -> "AsyncGenerator[FullState, None]":
         """Async generator yielding state updates.
 
         Yields:
@@ -471,7 +479,7 @@ class StreamClient:
 
         """
         status = await self.get_status()
-        return status.get("automatic_body_rotation", False)
+        return bool(status.get("automatic_body_rotation", False))
 
     async def get_daemon_status(self) -> dict[str, Any]:
         """Get full daemon status.

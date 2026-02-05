@@ -8,16 +8,10 @@ from enum import Enum
 
 from pydantic import BaseModel, SerializeAsAny
 
+from reachy_mini.motor_controller.abstract import MotorControlMode
+
 from .pose import AnyPose
 from .sensors import SensorData
-
-
-class MotorControlMode(str, Enum):
-    """Motor control modes."""
-
-    Enabled = "enabled"  # Torque ON, position control
-    Disabled = "disabled"  # Torque OFF, compliant
-    GravityCompensation = "gravity_compensation"  # Torque ON, current control
 
 
 class MotorName(str, Enum):

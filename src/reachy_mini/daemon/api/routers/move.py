@@ -5,7 +5,6 @@ This exposes:
 - play (wake_up, goto_sleep)
 - stop running moves
 - set_target (HTTP endpoint)
-- raw/write (WebSocket for low-level motor access)
 
 For real-time target streaming, use the unified WebSocket endpoint at /api/stream/ws.
 """
@@ -15,7 +14,7 @@ from typing import Any, Coroutine
 from uuid import uuid4
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException
 from huggingface_hub.errors import RepositoryNotFoundError
 
 from reachy_mini.daemon.models import FullBodyTarget, GotoRequest
@@ -32,7 +31,6 @@ from reachy_mini.motor_controller.abstract import MotorController
 from ..dependencies import (
     get_motion_manager,
     get_motor_controller,
-    ws_get_motor_controller,
 )
 
 move_tasks: dict[MoveId, asyncio.Task[None]] = {}
@@ -230,23 +228,3 @@ async def set_target(
         motor_controller.set_target_body_yaw(target.body_rotation)  # API uses body_rotation, internal uses body_yaw
 
     return {"status": "ok"}
-
-
-@router.websocket("/ws/raw/write")
-async def write(
-    websocket: WebSocket,
-    motor_controller: MotorController = Depends(ws_get_motor_controller),
-) -> None:
-    """WebSocket endpoint to stream raw packet to the serialport and return any response buffer.
-
-    Returns an empty bytes if no response is received.
-    """
-    await websocket.accept()
-
-    try:
-        while True:
-            data = await websocket.receive_bytes()
-            raw_response_packet: bytes = motor_controller.write_raw_packet(data)
-            await websocket.send_bytes(raw_response_packet)
-    except WebSocketDisconnect:
-        pass
