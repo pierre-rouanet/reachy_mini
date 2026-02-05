@@ -94,6 +94,20 @@ class GotoRequest(BaseModel):
     duration: float  # Movement duration in seconds
     interpolation: InterpolationTechnique = InterpolationTechnique.MIN_JERK
 
+    @model_validator(mode="after")
+    def validate_has_target(self) -> "GotoRequest":
+        """Validate that at least one target is provided."""
+        if (
+            self.head_pose is None
+            and self.head_joints is None
+            and self.antennas is None
+            and self.body_rotation is None
+        ):
+            raise ValueError(
+                "At least one target (head_pose, head_joints, antennas, or body_rotation) is required."
+            )
+        return self
+
     model_config = {
         "json_schema_extra": {
             "examples": [

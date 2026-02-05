@@ -83,7 +83,7 @@ class ReachyMini:
             media_backend (str): Use "no_media" to disable media entirely. Any other value
                 triggers auto-detection: Lite uses OpenCV, Wireless uses GStreamer (local)
                 or WebRTC (remote) based on environment.
-            automatic_body_rotation (bool): If True, the body yaw is automatically computed
+            automatic_body_rotation (bool): If True, the body rotation is automatically computed
                 during IK to stay within mechanical limits. Defaults to True.
 
         Raises:
@@ -257,14 +257,14 @@ class ReachyMini:
         antennas: Optional[
             Union[npt.NDArray[np.float64], List[float]]
         ] = None,  # [right_angle, left_angle] (in rads)
-        body_rotation: Optional[float] = None,  # Body yaw angle in radians
+        body_rotation: Optional[float] = None,  # Body rotation angle in radians
     ) -> None:
         """Set the target pose of the head and/or the target position of the antennas.
 
         Args:
             head (Optional[np.ndarray]): 4x4 pose matrix representing the head pose.
             antennas (Optional[Union[np.ndarray, List[float]]]): 1D array with two elements representing the angles of the antennas in radians.
-            body_rotation (Optional[float]): Body yaw angle in radians.
+            body_rotation (Optional[float]): Body rotation angle in radians.
 
         Raises:
             ValueError: If neither head nor antennas are provided, or if the shape of head is not (4, 4), or if antennas is not a 1D array with two elements.
@@ -320,7 +320,7 @@ class ReachyMini:
         ] = None,  # [right_angle, left_angle] (in rads)
         duration: float = 0.5,  # Duration in seconds for the movement, default is 0.5 seconds.
         method: InterpolationTechnique = InterpolationTechnique.MIN_JERK,  # can be "linear", "minjerk", "ease" or "cartoon", default is "minjerk")
-        body_rotation: float | None = 0.0,  # Body yaw angle in radians
+        body_rotation: float | None = 0.0,  # Body rotation angle in radians
     ) -> None:
         """Go to a target head pose and/or antennas position using task space interpolation, in "duration" seconds.
 
@@ -329,7 +329,7 @@ class ReachyMini:
             antennas (Optional[Union[np.ndarray, List[float]]]): 1D array with two elements representing the angles of the antennas in radians.
             duration (float): Duration of the movement in seconds.
             method (InterpolationTechnique): Interpolation method to use ("linear", "minjerk", "ease", "cartoon"). Default is "minjerk".
-            body_rotation (float | None): Body yaw angle in radians. Use None to keep the current yaw.
+            body_rotation (float | None): Body rotation angle in radians. Use None to keep the current rotation.
 
         Raises:
             ValueError: If neither head nor antennas are provided, or if duration is not positive.
@@ -699,10 +699,10 @@ class ReachyMini:
         self.client.send_target(target)
 
     def set_target_body_rotation(self, body_rotation: float) -> None:
-        """Set the target body yaw.
+        """Set the target body rotation.
 
         Args:
-            body_rotation (float): The yaw angle of the body in radians.
+            body_rotation (float): The rotation angle of the body in radians.
 
         """
         target = FullBodyTarget(body_rotation=body_rotation)
@@ -777,13 +777,13 @@ class ReachyMini:
         self.client.set_motor_mode(MotorControlMode.Enabled)
 
     def set_automatic_body_rotation(self, enabled: bool) -> None:
-        """Set the automatic body yaw.
+        """Set the automatic body rotation.
 
-        When enabled, the body yaw is automatically computed during IK
+        When enabled, the body rotation is automatically computed during IK
         to stay within mechanical limits.
 
         Args:
-            enabled (bool): Whether to enable automatic body yaw.
+            enabled (bool): Whether to enable automatic body rotation.
 
         """
         self.client.set_automatic_body_rotation(enabled)

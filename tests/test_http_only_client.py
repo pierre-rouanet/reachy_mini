@@ -511,6 +511,31 @@ async def test_http_only_client_motor_status() -> None:
             client.disconnect()
 
 
+def test_goto_request_requires_target() -> None:
+    """Test that GotoRequest requires at least one target."""
+    from pydantic import ValidationError
+
+    from reachy_mini.daemon.models import GotoRequest
+
+    # Should fail: no target provided
+    try:
+        GotoRequest(duration=1.0)
+        assert False, "Should have raised ValidationError"
+    except ValidationError as e:
+        assert "At least one target" in str(e)
+
+    # Should succeed: head_pose provided
+    req = GotoRequest(
+        head_pose={"x": 0, "y": 0, "z": 0.02, "roll": 0, "pitch": 0, "yaw": 0},
+        duration=1.0,
+    )
+    assert req.head_pose is not None
+
+    # Should succeed: only body_rotation provided
+    req = GotoRequest(body_rotation=0.1, duration=1.0)
+    assert req.body_rotation == 0.1
+
+
 def test_duplicate_move_id_validation() -> None:
     """Test that duplicate move IDs are rejected only while in progress."""
     from reachy_mini.daemon.api.routers.move import (
