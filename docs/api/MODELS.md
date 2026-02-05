@@ -6,6 +6,78 @@ This document describes all data models used by the Reachy Mini API. These model
 
 ---
 
+## Coordinate Frames and Units
+
+### Reference Frame
+
+Reachy Mini uses a **right-handed coordinate system** with the origin at the base of the robot:
+
+```
+        +Z (up)
+         |
+         |
+         |_______ +Y (left, from robot's perspective)
+        /
+       /
+      +X (forward, direction robot faces)
+```
+
+**Key points:**
+- **Origin:** Center of the robot base, at the bottom of the body rotation axis
+- **+X:** Forward (direction the robot faces when body_rotation = 0)
+- **+Y:** Left (from the robot's perspective)
+- **+Z:** Up (vertical)
+
+### Units
+
+| Quantity | Unit | Notes |
+|----------|------|-------|
+| Position (x, y, z) | **meters** | Typical head z range: 0.0 to 0.05 m |
+| Angles (roll, pitch, yaw) | **radians** | Use `math.radians()` to convert from degrees |
+| Joint positions | **radians** | Stewart platform and antenna angles |
+| Body rotation | **radians** | Positive = counter-clockwise when viewed from above |
+| Duration | **seconds** | Goto movement duration |
+| Timestamp | **seconds** | Unix timestamp (seconds since epoch) |
+| Temperature | **°C** | IMU sensor temperature |
+| Acceleration | **m/s²** | IMU accelerometer |
+| Angular velocity | **rad/s** | IMU gyroscope |
+
+### Euler Angle Convention
+
+Poses use **XYZ Euler angles** (also known as Tait-Bryan angles):
+
+| Angle | Axis | Positive Direction | Typical Range |
+|-------|------|-------------------|---------------|
+| `roll` | X | Right side down | ±0.3 rad (±17°) |
+| `pitch` | Y | Looking up | ±0.4 rad (±23°) |
+| `yaw` | Z | Turning left | ±0.8 rad (±46°) |
+
+**Rotation order:** Roll → Pitch → Yaw (applied in that sequence)
+
+### Body Rotation
+
+The `body_rotation` field controls the rotation of the entire head assembly around the vertical axis:
+
+- **0 rad:** Robot facing forward
+- **Positive:** Counter-clockwise rotation (turning left when viewed from above)
+- **Negative:** Clockwise rotation (turning right)
+- **Range:** Approximately ±1.0 rad (±57°)
+
+**Note:** `body_rotation` is separate from `head_joints`. When using task-space control (`head_pose`), the IK solver can automatically adjust body rotation to reach targets outside the direct workspace.
+
+### Antenna Positions
+
+Antenna positions are specified as `[right_antenna, left_antenna]`:
+
+- **0 rad:** Antennas pointing straight up
+- **Positive (right):** Antenna tilts forward
+- **Negative (right):** Antenna tilts backward
+- **Positive (left):** Antenna tilts backward
+- **Negative (left):** Antenna tilts forward
+- **Range:** Approximately ±3.14 rad (full rotation)
+
+---
+
 ## Overview
 
 The API uses [Pydantic](https://docs.pydantic.dev/) models for validation and serialization. All models serialize to/from JSON.

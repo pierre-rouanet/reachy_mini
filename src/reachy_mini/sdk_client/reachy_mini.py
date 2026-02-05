@@ -731,6 +731,34 @@ class ReachyMini:
             self._stream_client.set_target(body_rotation=body_rotation)  # type: ignore
         )
 
+    def set_target_head_joints(self, head_joints: List[float]) -> None:
+        """Set the target head joint positions (joint-space control).
+
+        This is an alternative to set_target_head_pose() for joint-space control.
+        Use this when you need direct control over the stewart platform actuators.
+
+        Args:
+            head_joints: 6 stewart platform joint positions in radians.
+
+        Raises:
+            ValueError: If head_joints does not have exactly 6 elements.
+
+        """
+        if len(head_joints) != 6:
+            raise ValueError(f"head_joints must have 6 elements, got {len(head_joints)}")
+        self._run_async(
+            self._stream_client.set_target(head_joints=head_joints)  # type: ignore
+        )
+
+    def get_current_head_joints(self) -> List[float]:
+        """Get the current head joint positions (stewart platform).
+
+        Returns:
+            List of 6 stewart platform joint positions in radians.
+
+        """
+        return self.get_current_joint_positions()[0]
+
     def start_recording(self) -> None:
         """Start recording data (client-side)."""
         self._recorded_data: List[
