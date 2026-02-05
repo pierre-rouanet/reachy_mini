@@ -13,7 +13,7 @@ The Daemon provides a simple high-level API: start(), stop(), run4ever(), status
 import asyncio
 import logging
 import signal
-from dataclasses import dataclass
+from dataclasses import asdict
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, Optional
@@ -21,14 +21,12 @@ from typing import TYPE_CHECKING, Any, Optional
 from reachy_mini.apps.manager import AppManager
 from reachy_mini.daemon.api_manager import ApiManager
 from reachy_mini.daemon.args import DaemonArgs
+from reachy_mini.daemon.models import DaemonStatus
 from reachy_mini.daemon.utils import get_ip_address
 from reachy_mini.daemon.webrtc_manager import WebRTCManager
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.manager import MotionManager
-from reachy_mini.motor_controller.abstract import (
-    MotorControllerStatus,
-    MotorControlMode,
-)
+from reachy_mini.motor_controller.abstract import MotorControlMode
 from reachy_mini.motor_controller.manager import MotorManager
 
 if TYPE_CHECKING:
@@ -44,22 +42,6 @@ class DaemonState(Enum):
     STOPPING = "stopping"
     STOPPED = "stopped"
     ERROR = "error"
-
-
-@dataclass
-class DaemonStatus:
-    """Dataclass representing the status of the Reachy Mini daemon."""
-
-    robot_name: str
-    state: DaemonState
-    wireless_version: bool
-    desktop_app_daemon: bool
-    simulation_enabled: Optional[bool]
-    mockup_sim_enabled: Optional[bool]
-    motor_controller_status: Optional[MotorControllerStatus]
-    error: Optional[str] = None
-    wlan_ip: Optional[str] = None
-    version: Optional[str] = None
 
 
 class Daemon:
@@ -103,19 +85,13 @@ class Daemon:
             package_version = None
             self.logger.warning("Could not determine daemon version")
 
-        # Initialize status
-        self._status = DaemonStatus(
-            robot_name=self._config.robot_name,
-            state=DaemonState.NOT_INITIALIZED,
-            wireless_version=self._config.wireless_version,
-            desktop_app_daemon=self._config.desktop_app_daemon,
-            simulation_enabled=None,
-            mockup_sim_enabled=None,
-            motor_controller_status=None,
-            error=None,
-            wlan_ip=None,
-            version=package_version,
-        )
+        # Initialize status tracking
+        self._state = DaemonState.NOT_INITIALIZED
+        self._error: Optional[str] = None
+        self._wlan_ip: Optional[str] = None
+        self._version: Optional[str] = package_version
+        self._simulation_enabled: Optional[bool] = None
+        self._mockup_sim_enabled: Optional[bool] = None
 
         # Create managers
         self._motor_manager = MotorManager(
@@ -192,9 +168,9 @@ class Daemon:
             DaemonState: The current state after attempting to start.
 
         """
-        if self._status.state == DaemonState.RUNNING:
+        if self._state == DaemonState.RUNNING:
             self.logger.warning("Daemon is already running.")
-            return self._status.state
+            return self._state
 
         # Handle localhost_only default based on wireless_version
         localhost_only = self._config.localhost_only
@@ -214,13 +190,13 @@ class Daemon:
         )
 
         # Update status
-        self._status.simulation_enabled = self._config.sim
-        self._status.mockup_sim_enabled = self._config.mockup_sim
+        self._simulation_enabled = self._config.sim
+        self._mockup_sim_enabled = self._config.mockup_sim
         if not localhost_only:
-            self._status.wlan_ip = get_ip_address()
+            self._wlan_ip = get_ip_address()
 
         self.logger.info("Starting Reachy Mini daemon...")
-        self._status.state = DaemonState.STARTING
+        self._state = DaemonState.STARTING
 
         # 1. Start the audio manager (if audio enabled)
         if self._config.use_audio:
@@ -250,8 +226,8 @@ class Daemon:
             motor_started = True
         except Exception as e:
             self.logger.error(f"Error while starting motor controller: {e}")
-            self._status.state = DaemonState.ERROR
-            self._status.error = str(e)
+            self._state = DaemonState.ERROR
+            self._error = str(e)
             # Continue to start FastAPI so status can be queried
 
         # 3. Wire up motion manager with motor controller and audio
@@ -266,11 +242,11 @@ class Daemon:
                 await self._motion_manager.wake_up()
             except Exception as e:
                 self.logger.error(f"Error while waking up Reachy Mini: {e}")
-                self._status.state = DaemonState.ERROR
-                self._status.error = str(e)
+                self._state = DaemonState.ERROR
+                self._error = str(e)
             except KeyboardInterrupt:
                 self.logger.warning("Wake up interrupted by user.")
-                self._status.state = DaemonState.STOPPING
+                self._state = DaemonState.STOPPING
 
         # 5. Start WebRTC interface (if enabled and motor controller started)
         if motor_started:
@@ -279,13 +255,13 @@ class Daemon:
         # 6. Start FastAPI server (always start so status can be queried)
         await self._api_manager.start_server(self._config)
 
-        if motor_started and self._status.state != DaemonState.ERROR:
+        if motor_started and self._state != DaemonState.ERROR:
             self.logger.info("Daemon started successfully.")
-            self._status.state = DaemonState.RUNNING
+            self._state = DaemonState.RUNNING
         else:
             self.logger.warning("Daemon started with errors (motor controller failed).")
 
-        return self._status.state
+        return self._state
 
     async def stop(self, goto_sleep_on_stop: bool | None = None) -> DaemonState:
         """Stop the Reachy Mini daemon.
@@ -298,20 +274,20 @@ class Daemon:
             DaemonState: The current state after attempting to stop.
 
         """
-        if self._status.state == DaemonState.STOPPED:
+        if self._state == DaemonState.STOPPED:
             self.logger.warning("Daemon is already stopped.")
-            return self._status.state
+            return self._state
 
         # Use config value if not specified
         if goto_sleep_on_stop is None:
             goto_sleep_on_stop = self._config.goto_sleep_on_stop
 
         try:
-            if self._status.state in (DaemonState.STOPPING, DaemonState.ERROR):
+            if self._state in (DaemonState.STOPPING, DaemonState.ERROR):
                 goto_sleep_on_stop = False
 
             self.logger.info("Stopping Reachy Mini daemon...")
-            self._status.state = DaemonState.STOPPING
+            self._state = DaemonState.STOPPING
 
             # 1. Pause WebRTC (keep signaling server running for restart)
             self._webrtc_manager.pause()
@@ -342,16 +318,16 @@ class Daemon:
             await self._api_manager.stop_server()
 
             self.logger.info("Daemon stopped successfully.")
-            self._status.state = DaemonState.STOPPED
+            self._state = DaemonState.STOPPED
 
         except Exception as e:
             self.logger.error(f"Error while stopping the daemon: {e}")
-            self._status.state = DaemonState.ERROR
-            self._status.error = str(e)
+            self._state = DaemonState.ERROR
+            self._error = str(e)
         except KeyboardInterrupt:
             self.logger.warning("Daemon already stopping...")
 
-        return self._status.state
+        return self._state
 
     async def restart(self, config: DaemonArgs | None = None) -> DaemonState:
         """Restart the Reachy Mini daemon.
@@ -363,11 +339,11 @@ class Daemon:
             DaemonState: The current state after attempting to restart.
 
         """
-        if self._status.state == DaemonState.STOPPED:
+        if self._state == DaemonState.STOPPED:
             self.logger.warning("Daemon is not running.")
-            return self._status.state
+            return self._state
 
-        if self._status.state in (DaemonState.RUNNING, DaemonState.ERROR):
+        if self._state in (DaemonState.RUNNING, DaemonState.ERROR):
             self.logger.info("Restarting Reachy Mini daemon...")
 
             # Use goto_sleep=False during restart to avoid unnecessary movement
@@ -390,13 +366,28 @@ class Daemon:
 
         """
         motor_status = self._motor_manager.status()
-        self._status.motor_controller_status = motor_status.motor_controller_status
 
         if motor_status.error:
-            self._status.state = DaemonState.ERROR
-            self._status.error = motor_status.error
+            self._state = DaemonState.ERROR
+            self._error = motor_status.error
 
-        return self._status
+        # Convert MotorControllerStatus dataclass to dict if present
+        motor_controller_dict = None
+        if motor_status.motor_controller_status is not None:
+            motor_controller_dict = asdict(motor_status.motor_controller_status)
+
+        return DaemonStatus(
+            robot_name=self._config.robot_name,
+            state=self._state.value,
+            wireless_version=self._config.wireless_version,
+            desktop_app_daemon=self._config.desktop_app_daemon,
+            simulation_enabled=self._simulation_enabled,
+            mockup_sim_enabled=self._mockup_sim_enabled,
+            motor_controller_status=motor_controller_dict,
+            error=self._error,
+            wlan_ip=self._wlan_ip,
+            version=self._version,
+        )
 
     async def run4ever(self) -> None:
         """Run the Reachy Mini daemon indefinitely.
@@ -448,7 +439,7 @@ class Daemon:
 
         await self.start()
 
-        if self._status.state in (DaemonState.RUNNING, DaemonState.ERROR):
+        if self._state in (DaemonState.RUNNING, DaemonState.ERROR):
             # Set up shutdown event for signal handling
             shutdown_event = asyncio.Event()
 
@@ -475,8 +466,8 @@ class Daemon:
                     await asyncio.sleep(0.1)
             except Exception as e:
                 self.logger.error(f"An error occurred: {e}")
-                self._status.state = DaemonState.ERROR
-                self._status.error = str(e)
+                self._state = DaemonState.ERROR
+                self._error = str(e)
             finally:
                 # Remove signal handlers
                 for sig in (signal.SIGINT, signal.SIGTERM):

@@ -11,14 +11,18 @@ from .messages import (
     MoveStatus,
     # Commands (Client → Server)
     CancelCommand,
+    GetDaemonStatusCommand,
     GetStatusCommand,
     GotoCommand,
     InboundMessage,
+    SetAutomaticBodyRotationCommand,
     SetModeCommand,
     SubscribeCommand,
     TargetCommand,
     # Events (Server → Client)
+    AutomaticBodyRotationChangedEvent,
     CancelledEvent,
+    DaemonStatusEvent,
     ErrorEvent,
     GotoDoneEvent,
     GotoStartedEvent,
@@ -42,6 +46,8 @@ __all__ = [
     "CancelCommand",
     "SubscribeCommand",
     "GetStatusCommand",
+    "GetDaemonStatusCommand",
+    "SetAutomaticBodyRotationCommand",
     "InboundMessage",
     # Events
     "StateEvent",
@@ -51,6 +57,8 @@ __all__ = [
     "CancelledEvent",
     "ErrorEvent",
     "StatusEvent",
+    "DaemonStatusEvent",
+    "AutomaticBodyRotationChangedEvent",
     "OutboundMessage",
     # Utilities
     "parse_inbound_message",

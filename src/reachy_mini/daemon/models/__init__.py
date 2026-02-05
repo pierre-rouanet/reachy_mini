@@ -28,6 +28,7 @@ from .sensors import (
     IMUData,
     SensorData,
 )
+from .daemon_status import DaemonStatus
 
 __all__ = [
     # Pose models
@@ -48,4 +49,6 @@ __all__ = [
     "SensorData",
     "DoAData",
     "IMUData",
+    # Daemon status
+    "DaemonStatus",
 ]

@@ -3,7 +3,7 @@
 This module provides the client interfaces for communicating with the Reachy Mini daemon.
 """
 
-from reachy_mini.sdk_client.api_client import ApiClient
 from reachy_mini.sdk_client.reachy_mini import ReachyMini
+from reachy_mini.sdk_client.stream_client import StreamClient
 
-__all__ = ["ApiClient", "ReachyMini"]
+__all__ = ["ReachyMini", "StreamClient"]

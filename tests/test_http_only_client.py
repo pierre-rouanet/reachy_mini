@@ -3,8 +3,8 @@
 This is a test client that uses ONLY HTTP endpoints (no WebSocket).
 It demonstrates that full robot control is possible via REST API alone.
 
-For production use, prefer ApiClient which uses WebSocket for real-time
-state streaming and lower latency target updates.
+For production use, prefer StreamClient or ReachyMini which use WebSocket
+for real-time state streaming and lower latency target updates.
 
 This module also contains pytest tests that verify HTTP-only API completeness.
 """
@@ -36,7 +36,7 @@ class HttpOnlyClient:
     This client uses only HTTP REST endpoints - no WebSocket connections.
     Useful for simple integrations or environments where WebSocket is not available.
 
-    Limitations compared to ApiClient:
+    Limitations compared to StreamClient:
     - State is polled on each get_state() call (no real-time streaming)
     - set_target() has higher latency (HTTP request per call)
     - wait_for_move_completion() polls status endpoint
@@ -509,6 +509,125 @@ async def test_http_only_client_motor_status() -> None:
 
         finally:
             client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_unified_stream_endpoint() -> None:
+    """Test the unified streaming WebSocket endpoint."""
+    import json
+
+    import websockets
+
+    async with Daemon(_TEST_CONFIG):
+        uri = "ws://localhost:8000/api/stream/ws"
+        async with websockets.connect(uri) as ws:
+            # Test get_status command
+            await ws.send(json.dumps({"cmd": "get_status"}))
+            response = json.loads(await ws.recv())
+            assert response["event"] == "status"
+            assert response["motor_ready"] is True
+
+            # Test set_mode command
+            await ws.send(json.dumps({"cmd": "set_mode", "mode": "enabled"}))
+            response = json.loads(await ws.recv())
+            assert response["event"] == "mode_changed"
+            assert response["mode"] == "enabled"
+
+            # Test subscribe command - should start receiving state events
+            await ws.send(
+                json.dumps(
+                    {
+                        "cmd": "subscribe",
+                        "fields": ["head_pose", "body_rotation"],
+                        "frequency": 10,
+                    }
+                )
+            )
+
+            # Should receive state events
+            response = json.loads(await ws.recv())
+            assert response["event"] == "state"
+            assert "head_pose" in response["state"]
+            assert "body_rotation" in response["state"]
+
+            # Test target command (fire-and-forget, no response expected)
+            await ws.send(
+                json.dumps(
+                    {
+                        "cmd": "target",
+                        "target": {"body_rotation": 0.1},
+                    }
+                )
+            )
+
+            # Should still receive state events
+            response = json.loads(await ws.recv())
+            assert response["event"] == "state"
+
+            # Test blocking goto
+            await ws.send(
+                json.dumps(
+                    {
+                        "cmd": "goto",
+                        "request": {"body_rotation": 0.0, "duration": 0.2},
+                    }
+                )
+            )
+
+            # Receive state events until goto_done
+            while True:
+                response = json.loads(await ws.recv())
+                if response["event"] == "goto_done":
+                    assert response["status"] == "completed"
+                    break
+                assert response["event"] == "state"
+
+
+@pytest.mark.asyncio
+async def test_stream_client() -> None:
+    """Test the StreamClient using the unified streaming endpoint."""
+    from reachy_mini.sdk_client.stream_client import StreamClient
+
+    async with Daemon(_TEST_CONFIG):
+        async with StreamClient() as client:
+            # Test get_status
+            status = await client.get_status()
+            assert status["motor_ready"] is True
+
+            # Test set_mode
+            await client.enable_motors()
+
+            # Test subscribe and state streaming
+            await client.subscribe(
+                fields=["head_pose", "body_rotation", "antennas"],
+                frequency=20,
+            )
+
+            # Get a state update
+            state = await client.get_state()
+            assert state.head_pose is not None
+            assert state.body_rotation is not None
+
+            # Test set_target (fire-and-forget)
+            await client.set_target(body_rotation=0.05)
+
+            # Get another state to confirm
+            state = await client.get_state()
+            assert state is not None
+
+            # Test blocking goto
+            status = await client.goto(body_rotation=0.0, duration=0.3)
+            assert status == MoveStatus.Completed
+
+            # Test async goto
+            move_id = await client.goto_async(body_rotation=0.1, duration=0.3)
+            assert move_id is not None
+
+            # Wait for completion
+            status = await client.wait_for_goto(move_id, timeout=5.0)
+            assert status == MoveStatus.Completed
+
+            await client.disable_motors()
 
 
 def test_goto_request_requires_target() -> None:

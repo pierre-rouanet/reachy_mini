@@ -43,9 +43,9 @@ async def test_daemon_faulty_motor_controller_fastapi_still_running() -> None:
 
         # Daemon should be in ERROR state due to motor controller failure
         assert state == DaemonState.ERROR
-        assert daemon._status.error is not None
+        assert daemon._error is not None
         # Error could be "No such file or directory" or "No Reachy Mini serial port found"
-        assert len(daemon._status.error) > 0
+        assert len(daemon._error) > 0
 
         # FastAPI should still be reachable
         async with aiohttp.ClientSession() as session:
@@ -101,7 +101,7 @@ async def test_daemon_faulty_audio_backend_still_running() -> None:
 
             # Daemon should still be RUNNING (audio failure is non-critical)
             assert state == DaemonState.RUNNING
-            assert daemon._status.error is None  # No error since audio is optional
+            assert daemon._error is None  # No error since audio is optional
 
             # Audio manager should be None due to initialization failure
             assert daemon._audio_manager is None
@@ -141,7 +141,7 @@ async def test_daemon_client_disconnection() -> None:
 
         async def simple_client() -> None:
             with ReachyMini(media_backend="no_media") as mini:
-                status = mini.client.get_status()
+                status = mini.get_status()
                 assert status['state'] == "running"
                 assert status['simulation_enabled']
                 assert status['error'] is None

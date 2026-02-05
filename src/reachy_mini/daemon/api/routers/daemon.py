@@ -6,8 +6,9 @@ import threading
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from reachy_mini.daemon.api import bg_job_register
+from reachy_mini.daemon.models import DaemonStatus
 
-from ...daemon import Daemon, DaemonStatus
+from ...daemon import Daemon
 from ..dependencies import get_daemon
 
 router = APIRouter(

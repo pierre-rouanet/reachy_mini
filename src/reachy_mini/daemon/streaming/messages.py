@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, TypeAdapter
 
 from reachy_mini.daemon.models import (
+    DaemonStatus,
     FullBodyTarget,
     FullState,
     GotoRequest,
@@ -108,6 +109,28 @@ class GetStatusCommand(BaseModel):
     cmd: Literal["get_status"] = "get_status"
 
 
+class SetAutomaticBodyRotationCommand(BaseModel):
+    """Set automatic body rotation.
+
+    When enabled, the body rotation is automatically computed during IK
+    to stay within mechanical limits.
+
+    Returns AutomaticBodyRotationChangedEvent.
+    """
+
+    cmd: Literal["set_automatic_body_rotation"] = "set_automatic_body_rotation"
+    enabled: bool
+
+
+class GetDaemonStatusCommand(BaseModel):
+    """Request full daemon status.
+
+    Returns DaemonStatusEvent with complete daemon information.
+    """
+
+    cmd: Literal["get_daemon_status"] = "get_daemon_status"
+
+
 # Union of all inbound message types
 InboundMessage = (
     TargetCommand
@@ -116,6 +139,8 @@ InboundMessage = (
     | CancelCommand
     | SubscribeCommand
     | GetStatusCommand
+    | SetAutomaticBodyRotationCommand
+    | GetDaemonStatusCommand
 )
 
 # Type adapter for parsing inbound messages
@@ -193,6 +218,20 @@ class StatusEvent(BaseModel):
     motor_ready: bool
     control_mode: MotorControlMode | None = None
     available_sensors: list[str] = []
+    automatic_body_rotation: bool | None = None
+
+
+class AutomaticBodyRotationChangedEvent(BaseModel):
+    """Automatic body rotation setting changed."""
+
+    event: Literal["automatic_body_rotation_changed"] = "automatic_body_rotation_changed"
+    enabled: bool
+
+
+class DaemonStatusEvent(DaemonStatus):
+    """Full daemon status response (streaming event)."""
+
+    event: Literal["daemon_status"] = "daemon_status"
 
 
 # Union of all outbound message types
@@ -204,4 +243,6 @@ OutboundMessage = (
     | CancelledEvent
     | ErrorEvent
     | StatusEvent
+    | AutomaticBodyRotationChangedEvent
+    | DaemonStatusEvent
 )
