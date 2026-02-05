@@ -29,7 +29,11 @@ from ..dependencies import (
 )
 
 move_tasks: dict[MoveId, asyncio.Task[None]] = {}
+move_completed: dict[MoveId, MoveStatus] = {}  # Cache of completed move statuses
 move_listeners: list[WebSocket] = []
+
+# Max number of completed moves to cache (prevents unbounded growth)
+_MAX_COMPLETED_CACHE = 100
 
 
 router = APIRouter(prefix="/move")
@@ -53,16 +57,25 @@ def create_move_task(coro: Coroutine[Any, Any, None]) -> GotoStartedEvent:
                 move_listeners.remove(ws)
 
     async def wrap_coro() -> None:
+        status = MoveStatus.Completed
         try:
             await notify_listeners("move_started")
             await coro
             await notify_listeners("move_completed")
-        except Exception as e:
-            await notify_listeners("move_failed", details=str(e))
         except asyncio.CancelledError:
+            status = MoveStatus.Cancelled
             await notify_listeners("move_cancelled")
+        except Exception as e:
+            status = MoveStatus.Failed
+            await notify_listeners("move_failed", details=str(e))
         finally:
             move_tasks.pop(move_id, None)
+            # Cache the final status for HTTP polling
+            if len(move_completed) >= _MAX_COMPLETED_CACHE:
+                # Remove oldest entry (first key)
+                oldest = next(iter(move_completed))
+                move_completed.pop(oldest)
+            move_completed[move_id] = status
 
     task = asyncio.create_task(wrap_coro())
     move_tasks[move_id] = task
@@ -163,7 +176,8 @@ async def get_goto_status(move_id: str) -> GotoDoneEvent:
     """Get the status of a goto movement."""
     if move_id in move_tasks:
         return GotoDoneEvent(id=move_id, status=MoveStatus.InProgress)
-    # TODO: Track completed moves to return proper status
+    if move_id in move_completed:
+        return GotoDoneEvent(id=move_id, status=move_completed[move_id])
     return GotoDoneEvent(id=move_id, status=MoveStatus.NotFound)
 
 
@@ -209,7 +223,7 @@ async def set_target(
         motor_controller.set_target_antenna_joint_positions(np.array(target.antennas))
 
     if target.body_rotation is not None:
-        motor_controller.set_target_body_rotation(target.body_rotation)
+        motor_controller.set_target_body_yaw(target.body_rotation)  # API uses body_rotation, internal uses body_yaw
 
     return {"status": "ok"}
 
