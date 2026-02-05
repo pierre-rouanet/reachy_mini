@@ -23,7 +23,7 @@ from reachy_mini.daemon.utils import daemon_check, is_local_camera_available
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.move import Move
 from reachy_mini.sdk_client.stream_client import StreamClient
-from reachy_mini.utils.interpolation import InterpolationTechnique, minimum_jerk
+from reachy_mini.utils.interpolation import InterpolationTechnique
 
 T = TypeVar("T")
 
@@ -393,9 +393,6 @@ class ReachyMini:
 
         if antennas is not None:
             self.set_target_antenna_joint_positions(list(antennas))
-            # self._set_joint_positions(
-            #     antennas_joint_positions=list(antennas),
-            # )
 
         if body_rotation is not None:
             self.set_target_body_rotation(body_rotation)
@@ -645,69 +642,16 @@ class ReachyMini:
 
         return target_head_pose
 
-    def _goto_joint_positions(
-        self,
-        head_joint_positions: Optional[
-            List[float]
-        ] = None,  # [yaw, stewart_platform x 6] length 7
-        antennas_joint_positions: Optional[
-            List[float]
-        ] = None,  # [right_angle, left_angle] length 2
-        duration: float = 0.5,  # Duration in seconds for the movement
-    ) -> None:
-        """Go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
-
-        [Internal] Go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
-
-        Args:
-            head_joint_positions (Optional[List[float]]): List of head joint positions in radians (length 7).
-            antennas_joint_positions (Optional[List[float]]): List of antennas joint positions in radians (length 2).
-            duration (float): Duration of the movement in seconds. Default is 0.5 seconds.
-
-        Raises:
-            ValueError: If neither head_joint_positions nor antennas_joint_positions are provided, or if duration is not positive.
-
-        """
-        if duration <= 0.0:
-            raise ValueError(
-                "Duration must be positive and non-zero. Use set_target() for immediate position setting."
-            )
-
-        cur_head, cur_antennas = self.get_current_joint_positions()
-        current = cur_head + cur_antennas
-
-        target = []
-        if head_joint_positions is not None:
-            target.extend(head_joint_positions)
-        else:
-            target.extend(cur_head)
-        if antennas_joint_positions is not None:
-            target.extend(antennas_joint_positions)
-        else:
-            target.extend(cur_antennas)
-
-        traj = minimum_jerk(np.array(current), np.array(target), duration)
-
-        t0 = time.time()
-        while time.time() - t0 < duration:
-            t = time.time() - t0
-            angles = traj(t)
-
-            head_joint = angles[:7]  # First 7 angles for the head
-            antennas_joint = angles[7:]
-
-            self._set_joint_positions(list(head_joint), list(antennas_joint))
-            time.sleep(0.01)
-
     def get_current_joint_positions(self) -> tuple[list[float], list[float]]:
         """Get the current joint positions of the head and antennas.
 
-        Get the current joint positions of the head and antennas (in rad)
-
         Returns:
             tuple: A tuple containing two lists:
-                - List of head joint positions (rad) (length 7).
+                - List of stewart platform joint positions (rad) (length 6).
                 - List of antennas joint positions (rad) (length 2).
+
+        Note:
+            Body rotation is accessed separately via get_current_body_rotation().
 
         """
         s = self._run_async(self._stream_client.get_state())  # type: ignore
@@ -719,13 +663,23 @@ class ReachyMini:
     def get_present_antenna_joint_positions(self) -> list[float]:
         """Get the present joint positions of the antennas.
 
-        Get the present joint positions of the antennas (in rad)
-
         Returns:
             list: A list of antennas joint positions (rad) (length 2).
 
         """
         return self.get_current_joint_positions()[1]
+
+    def get_current_body_rotation(self) -> float:
+        """Get the current body rotation angle.
+
+        Returns:
+            float: Body rotation angle in radians.
+
+        """
+        state = self._run_async(self._stream_client.get_state())  # type: ignore
+        assert state is not None, "Could not get state from daemon."
+        assert state.body_rotation is not None, "Body rotation data is None."
+        return float(state.body_rotation)
 
     def get_current_head_pose(self) -> npt.NDArray[np.float64]:
         """Get the current head pose as a 4x4 matrix.
@@ -741,45 +695,6 @@ class ReachyMini:
         head_pose = state.head_pose
         assert head_pose is not None, "Head pose data is None."
         return head_pose.to_numpy()
-
-    def _set_joint_positions(
-        self,
-        head_joint_positions: list[float] | None = None,
-        antennas_joint_positions: list[float] | None = None,
-    ) -> None:
-        """Set the joint positions of the head and/or antennas.
-
-        [Internal] Central function for sending joint positions to the daemon.
-
-        Args:
-            head_joint_positions (Optional[List[float]]): List of head joint positions in radians (length 7).
-            antennas_joint_positions (Optional[List[float]]): List of antennas joint positions in radians (length 2).
-
-        """
-        if head_joint_positions is None and antennas_joint_positions is None:
-            raise ValueError(
-                "At least one of head_joint_positions or antennas_joint_positions must be provided."
-            )
-
-        if head_joint_positions is not None:
-            assert len(head_joint_positions) == 7, (
-                "Head joint positions must have length 7."
-            )
-
-        if antennas_joint_positions is not None:
-            assert len(antennas_joint_positions) == 2, "Antennas must have length 2."
-
-        # Note: head_joints not directly supported by StreamClient.set_target,
-        # but we can use the daemon's API to set joint positions via pose
-        # For now, only support antennas through this internal method
-        if head_joint_positions is not None:
-            self.logger.warning("Direct head joint position setting not yet supported via streaming. Use set_target_head_pose instead.")
-        if antennas_joint_positions is not None:
-            self._run_async(
-                self._stream_client.set_target(  # type: ignore
-                    antennas=antennas_joint_positions,
-                )
-            )
 
     def set_target_head_pose(self, pose: npt.NDArray[np.float64]) -> None:
         """Set the head pose to a specific 4x4 matrix.
