@@ -71,7 +71,9 @@ class MujocoController(MotorController):
             SLEEP_ANTENNAS_JOINT_POSITIONS[1],
             SLEEP_ANTENNAS_JOINT_POSITIONS[0],
         ]
-        self._SLEEP_HEAD_JOINT_POSITIONS = SLEEP_HEAD_JOINT_POSITIONS
+        # MuJoCo model has body_yaw as first actuator, SDK positions don't include it
+        # Prepend body_yaw=0 to match the 9 actuators: yaw_body + 6 stewart + 2 antennas
+        self._SLEEP_HEAD_JOINT_POSITIONS = [0.0] + list(SLEEP_HEAD_JOINT_POSITIONS)
 
         mjcf_root_path = str(
             files(reachy_mini).joinpath("descriptions/reachy_mini/mjcf/")

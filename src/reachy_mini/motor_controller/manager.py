@@ -63,7 +63,9 @@ class MotorManager:
     @property
     def ready(self) -> bool:
         """Check if the motor controller is ready."""
-        return self.motor_controller is not None and self.motor_controller.ready.is_set()
+        return (
+            self.motor_controller is not None and self.motor_controller.ready.is_set()
+        )
 
     @property
     def error(self) -> Optional[str]:
@@ -122,6 +124,7 @@ class MotorManager:
         )
 
         # Create the motor controller
+        self._error = None
         self.motor_controller = self._create_motor_controller(
             sim=sim,
             mockup_sim=mockup_sim,
@@ -149,7 +152,10 @@ class MotorManager:
 
         # Wait for motor controller to be ready
         if not self.motor_controller.ready.wait(timeout=2.0):
-            self._error = self.motor_controller.error or "Motor controller not ready after 2 seconds"
+            self._error = (
+                self.motor_controller.error
+                or "Motor controller not ready after 2 seconds"
+            )
             self.logger.error(self._error)
             raise RuntimeError(self._error)
 

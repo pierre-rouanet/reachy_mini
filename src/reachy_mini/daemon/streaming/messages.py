@@ -8,7 +8,6 @@ Commands: Client → Server (have 'cmd' field)
 Events: Server → Client (have 'event' field)
 """
 
-from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, TypeAdapter
@@ -20,21 +19,7 @@ from reachy_mini.daemon.models import (
     GotoRequest,
     MotorControlMode,
 )
-
-
-# Type alias for move identifiers (UUID as string)
-MoveId = str
-
-
-class MoveStatus(str, Enum):
-    """Status of a movement operation."""
-
-    InProgress = "in_progress"
-    Completed = "completed"
-    Failed = "failed"
-    Cancelled = "cancelled"
-    NotFound = "not_found"  # Unknown move ID
-
+from reachy_mini.motion.move_tracker import MoveId, MoveStatus
 
 # =============================================================================
 # Commands (Client → Server)

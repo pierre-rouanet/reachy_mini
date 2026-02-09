@@ -25,6 +25,7 @@ from reachy_mini.daemon.models import DaemonStatus
 from reachy_mini.daemon.utils import get_ip_address
 from reachy_mini.daemon.webrtc_manager import WebRTCManager
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
+from reachy_mini.motion import MoveTracker
 from reachy_mini.motion.manager import MotionManager
 from reachy_mini.motor_controller.abstract import MotorControlMode
 from reachy_mini.motor_controller.manager import MotorManager
@@ -102,6 +103,7 @@ class Daemon:
         self._motion_manager = MotionManager(
             log_level=self._config.log_level.value,
         )
+        self._move_tracker = MoveTracker()
         self._app_manager = AppManager(
             wireless_version=self._config.wireless_version,
             desktop_app_daemon=self._config.desktop_app_daemon,
@@ -161,6 +163,11 @@ class Daemon:
         """Get the MediaManager instance for audio."""
         return self._audio_manager
 
+    @property
+    def move_tracker(self) -> MoveTracker:
+        """Get the MoveTracker instance."""
+        return self._move_tracker
+
     async def start(self) -> DaemonState:
         """Start the Reachy Mini daemon.
 
@@ -197,6 +204,8 @@ class Daemon:
 
         self.logger.info("Starting Reachy Mini daemon...")
         self._state = DaemonState.STARTING
+        # Clear previous error
+        self._error = None
 
         # 1. Start the audio manager (if audio enabled)
         if self._config.use_audio:
@@ -294,12 +303,18 @@ class Daemon:
 
             # 2. Go to sleep if requested (uses motion manager for sound)
             if goto_sleep_on_stop and self._motor_manager.ready:
-                assert self.motor_controller is not None  # Guaranteed by _motor_manager.ready
+                assert (
+                    self.motor_controller is not None
+                )  # Guaranteed by _motor_manager.ready
                 try:
                     self.logger.info("Putting robot to sleep...")
-                    self.motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
+                    self.motor_controller.set_motor_control_mode(
+                        MotorControlMode.Enabled
+                    )
                     await self._motion_manager.goto_sleep()
-                    self.motor_controller.set_motor_control_mode(MotorControlMode.Disabled)
+                    self.motor_controller.set_motor_control_mode(
+                        MotorControlMode.Disabled
+                    )
                 except Exception as e:
                     self.logger.error(f"Error while putting robot to sleep: {e}")
                 except KeyboardInterrupt:
@@ -406,6 +421,7 @@ class Daemon:
 
         # Pre-download recorded move datasets in background
         if self._config.preload_datasets:
+
             def preload_with_logging() -> None:
                 try:
                     preload_default_datasets()
@@ -418,6 +434,7 @@ class Daemon:
 
         # Start periodic dataset updater if enabled
         if self._config.dataset_update_interval_hours > 0:
+
             async def dataset_updater(interval_hours: float) -> None:
                 interval_seconds = interval_hours * 3600
                 while True:

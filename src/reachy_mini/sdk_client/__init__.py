@@ -5,5 +5,6 @@ This module provides the client interfaces for communicating with the Reachy Min
 
 from reachy_mini.sdk_client.reachy_mini import ReachyMini
 from reachy_mini.sdk_client.stream_client import StreamClient
+from reachy_mini.sdk_client.transport import ClientTransport
 
-__all__ = ["ReachyMini", "StreamClient"]
+__all__ = ["ReachyMini", "StreamClient", "ClientTransport"]

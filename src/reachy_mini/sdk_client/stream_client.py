@@ -1,7 +1,8 @@
 """Streaming API client for Reachy Mini.
 
-This client uses the unified WebSocket streaming endpoint (/api/stream/ws)
-for all communication - state streaming and commands.
+This client uses the unified streaming endpoint for all communication -
+state streaming and commands. It supports multiple transports (WebSocket,
+WebRTC data channel) through the transport abstraction.
 
 This is the recommended client for real-time control and teleoperation.
 
@@ -19,23 +20,24 @@ if TYPE_CHECKING:
 
 import numpy as np
 import numpy.typing as npt
-import websockets
-from websockets.asyncio.client import ClientConnection
 
 from reachy_mini.daemon.models import FullState, MotorControlMode
 from reachy_mini.daemon.models.pose import pose_from_numpy
-from reachy_mini.daemon.streaming.messages import MoveId, MoveStatus
+from reachy_mini.motion import MoveId, MoveStatus
+from reachy_mini.sdk_client.transport import ClientTransport
 from reachy_mini.utils.interpolation import InterpolationTechnique
 
 
 class StreamClient:
-    """Streaming API client using the unified WebSocket endpoint.
+    """Streaming API client using a pluggable transport.
 
     This client provides:
     - Real-time state streaming at configurable frequency
     - Low-latency target updates (fire-and-forget)
     - Async and blocking goto operations
     - Motor mode control
+
+    The transport can be WebSocket (default) or WebRTC data channel.
 
     Example:
         async with StreamClient() as client:
@@ -53,24 +55,37 @@ class StreamClient:
         self,
         host: str = "localhost",
         port: int = 8000,
+        transport: Optional[ClientTransport] = None,
     ):
         """Initialize the streaming client.
 
         Args:
             host: The daemon host address.
             port: The daemon HTTP port.
+            transport: Optional transport instance. If not provided,
+                creates a WebSocket transport to ws://{host}:{port}/api/stream/ws.
 
         """
         self.logger = logging.getLogger(__name__)
         self.host = host
         self.port = port
-        self.uri = f"ws://{host}:{port}/api/stream/ws"
 
-        self._ws: Optional[ClientConnection] = None
+        # Create default WebSocket transport if none provided
+        if transport is None:
+            from reachy_mini.sdk_client.transports import WebSocketClientTransport
+
+            transport = WebSocketClientTransport(host=host, port=port)
+
+        self._transport = transport
+
         self._state_queue: asyncio.Queue[FullState] = asyncio.Queue()
         self._event_handlers: dict[str, asyncio.Queue[Any]] = {}
-        self._receive_task: Optional[asyncio.Task[None]] = None
         self._pending_gotos: dict[MoveId, asyncio.Future[MoveStatus]] = {}
+
+    @property
+    def uri(self) -> str:
+        """Get the connection URI."""
+        return self._transport.uri
 
     async def connect(self, timeout: float = 5.0) -> None:
         """Connect to the daemon streaming endpoint.
@@ -82,29 +97,14 @@ class StreamClient:
             ConnectionError: If unable to connect.
 
         """
-        try:
-            self._ws = await asyncio.wait_for(
-                websockets.connect(self.uri),
-                timeout=timeout,
-            )
-            self._receive_task = asyncio.create_task(self._receive_loop())
-            self.logger.info("Connected to streaming endpoint at %s", self.uri)
-        except Exception as e:
-            raise ConnectionError(f"Failed to connect to {self.uri}: {e}") from e
+        await self._transport.connect(timeout=timeout)
+        self._transport.on_message(self._on_message)
+        self._transport.on_close(self._on_close)
+        self.logger.info("Connected to streaming endpoint at %s", self.uri)
 
     async def disconnect(self) -> None:
         """Disconnect from the daemon."""
-        if self._receive_task:
-            self._receive_task.cancel()
-            try:
-                await self._receive_task
-            except asyncio.CancelledError:
-                pass
-            self._receive_task = None
-
-        if self._ws:
-            await self._ws.close()
-            self._ws = None
+        await self._transport.disconnect()
 
     async def __aenter__(self) -> "StreamClient":
         """Async context manager entry."""
@@ -122,58 +122,50 @@ class StreamClient:
 
     async def _send(self, cmd: dict[str, Any]) -> None:
         """Send a command to the server."""
-        if not self._ws:
-            raise ConnectionError("Not connected")
-        await self._ws.send(json.dumps(cmd))
+        await self._transport.send(json.dumps(cmd))
 
-    async def _receive_loop(self) -> None:
-        """Background task to receive and dispatch events."""
-        if not self._ws:
-            return
-
+    async def _on_message(self, message: str) -> None:
+        """Handle incoming message from transport."""
         try:
-            async for message in self._ws:
+            event = json.loads(message)
+            event_type = event.get("event")
+
+            if event_type == "state":
+                state = FullState.model_validate(event["state"])
+                # Non-blocking put, drop old states if queue is full
                 try:
-                    event = json.loads(message)
-                    event_type = event.get("event")
-
-                    if event_type == "state":
-                        state = FullState.model_validate(event["state"])
-                        # Non-blocking put, drop old states if queue is full
-                        try:
-                            self._state_queue.put_nowait(state)
-                        except asyncio.QueueFull:
-                            # Drop oldest and add new
-                            try:
-                                self._state_queue.get_nowait()
-                            except asyncio.QueueEmpty:
-                                pass
-                            self._state_queue.put_nowait(state)
-
-                    elif event_type == "goto_done":
-                        move_id = event.get("id")
-                        status = MoveStatus(event["status"])
-                        # Handle async goto completion
-                        if move_id and move_id in self._pending_gotos:
-                            self._pending_gotos[move_id].set_result(status)
-                        # Handle blocking goto (put in event handler queue)
-                        if "goto_done" in self._event_handlers:
-                            await self._event_handlers["goto_done"].put(event)
-
-                    elif event_type == "goto_started":
-                        # Just acknowledgment for async goto, no action needed
+                    self._state_queue.put_nowait(state)
+                except asyncio.QueueFull:
+                    # Drop oldest and add new
+                    try:
+                        self._state_queue.get_nowait()
+                    except asyncio.QueueEmpty:
                         pass
+                    self._state_queue.put_nowait(state)
 
-                    elif event_type in self._event_handlers:
-                        await self._event_handlers[event_type].put(event)
+            elif event_type == "goto_done":
+                move_id = event.get("id")
+                status = MoveStatus(event["status"])
+                # Handle async goto completion
+                if move_id and move_id in self._pending_gotos:
+                    self._pending_gotos[move_id].set_result(status)
+                # Handle blocking goto (put in event handler queue)
+                if "goto_done" in self._event_handlers:
+                    await self._event_handlers["goto_done"].put(event)
 
-                except Exception as e:
-                    self.logger.warning("Error processing event: %s", e)
+            elif event_type == "goto_started":
+                # Just acknowledgment for async goto, no action needed
+                pass
 
-        except asyncio.CancelledError:
-            pass
+            elif event_type in self._event_handlers:
+                await self._event_handlers[event_type].put(event)
+
         except Exception as e:
-            self.logger.error("Receive loop error: %s", e)
+            self.logger.warning("Error processing event: %s", e)
+
+    async def _on_close(self) -> None:
+        """Handle transport close."""
+        self.logger.debug("Transport connection closed")
 
     async def _wait_for_event(
         self, event_type: str, timeout: Optional[float] = None
@@ -433,15 +425,11 @@ class StreamClient:
 
         Raises:
             TimeoutError: If no state received within timeout.
-            ConnectionError: If WebSocket connection is closed.
+            ConnectionError: If connection is closed.
 
         """
-        # Check if WebSocket is still connected
-        if self._ws is None:
-            raise ConnectionError("WebSocket connection is closed")
-        # Check if connection is closed by examining the close code
-        if self._ws.close_code is not None:
-            raise ConnectionError("WebSocket connection is closed")
+        if not self._transport.is_connected:
+            raise ConnectionError("Transport connection is closed")
         return await asyncio.wait_for(self._state_queue.get(), timeout=5.0)
 
     async def state_stream(self) -> "AsyncGenerator[FullState, None]":

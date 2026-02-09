@@ -31,7 +31,6 @@ T = TypeVar("T")
 INIT_HEAD_POSE = np.eye(4)
 
 SLEEP_HEAD_JOINT_POSITIONS = [
-    0,
     -0.9848156658225817,
     1.2624661884298831,
     -0.24390294527381684,
@@ -184,7 +183,10 @@ class ReachyMini:
             error_str = str(e).lower()
             if any(x in error_type for x in ["connection", "websocket", "closed"]):
                 raise ConnectionError("Lost connection with the server.") from e
-            if any(x in error_str for x in ["connection", "closed", "disconnect", "service restart"]):
+            if any(
+                x in error_str
+                for x in ["connection", "closed", "disconnect", "service restart"]
+            ):
                 raise ConnectionError("Lost connection with the server.") from e
             raise
 
@@ -311,7 +313,9 @@ class ReachyMini:
         while self._loop is None:
             time.sleep(0.01)
 
-        hosts_to_try = [host] if host is not None else ["localhost", "reachy-mini.local"]
+        hosts_to_try = (
+            [host] if host is not None else ["localhost", "reachy-mini.local"]
+        )
 
         for try_host in hosts_to_try:
             client = StreamClient(host=try_host, port=port)
@@ -475,7 +479,6 @@ class ReachyMini:
         # init_positions = self.head_kinematics.ik(INIT_HEAD_POSE)
         # Todo : get init position from the daemon?
         init_positions = [
-            6.959852054044218e-07,
             0.5251518455536499,
             -0.668710345667336,
             0.6067086443974802,
@@ -745,7 +748,9 @@ class ReachyMini:
 
         """
         if len(head_joints) != 6:
-            raise ValueError(f"head_joints must have 6 elements, got {len(head_joints)}")
+            raise ValueError(
+                f"head_joints must have 6 elements, got {len(head_joints)}"
+            )
         self._run_async(
             self._stream_client.set_target(head_joints=head_joints)  # type: ignore
         )
@@ -821,7 +826,9 @@ class ReachyMini:
 
     def enable_gravity_compensation(self) -> None:
         """Enable gravity compensation for the head motors."""
-        self._run_async(self._stream_client.set_mode(MotorControlMode.GravityCompensation))  # type: ignore
+        self._run_async(
+            self._stream_client.set_mode(MotorControlMode.GravityCompensation)  # type: ignore[union-attr]
+        )
 
     def disable_gravity_compensation(self) -> None:
         """Disable gravity compensation for the head motors."""
@@ -856,8 +863,8 @@ class ReachyMini:
 
         """
         if initial_goto_duration > 0.0:
-            start_head_pose, start_antennas_positions, start_body_rotation = move.evaluate(
-                0.0
+            start_head_pose, start_antennas_positions, start_body_rotation = (
+                move.evaluate(0.0)
             )
             self.goto_target(
                 head=start_head_pose,
