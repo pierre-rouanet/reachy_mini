@@ -13,6 +13,7 @@ use the ReachyMini class which wraps StreamClient with a background event loop.
 import asyncio
 import json
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 if TYPE_CHECKING:
@@ -20,9 +21,25 @@ if TYPE_CHECKING:
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel
 
-from reachy_mini.daemon.models import FullState, MotorControlMode
+from reachy_mini.daemon.models import (
+    FullBodyTarget,
+    FullState,
+    GotoRequest,
+    MotorControlMode,
+)
 from reachy_mini.daemon.models.pose import pose_from_numpy
+from reachy_mini.daemon.streaming.messages import (
+    CancelCommand,
+    GetDaemonStatusCommand,
+    GetStatusCommand,
+    GotoCommand,
+    SetAutomaticBodyRotationCommand,
+    SetModeCommand,
+    SubscribeCommand,
+    TargetCommand,
+)
 from reachy_mini.motion import MoveId, MoveStatus
 from reachy_mini.sdk_client.transport import ClientTransport
 from reachy_mini.utils.interpolation import InterpolationTechnique
@@ -121,42 +138,9 @@ class StreamClient:
         """Async context manager exit."""
         await self.disconnect()
 
-    async def _send(self, cmd: dict[str, Any]) -> None:
+    async def _send_cmd(self, cmd: BaseModel) -> None:
         """Send a command to the server."""
-        await self._transport.send(json.dumps(cmd))
-
-    def _build_target(
-        self,
-        head: Optional[npt.NDArray[np.float64]] = None,
-        head_joints: Optional[List[float]] = None,
-        antennas: Optional[Union[npt.NDArray[np.float64], List[float]]] = None,
-        body_rotation: Optional[float] = None,
-    ) -> dict[str, Any]:
-        """Build target dict for commands.
-
-        For head control, use either head (task-space) OR head_joints (joint-space),
-        not both. If both are provided, head (task-space) takes precedence.
-
-        Args:
-            head: 4x4 pose matrix for head target (task-space control).
-            head_joints: 6 stewart platform joint positions in radians (joint-space control).
-            antennas: [right_angle, left_angle] in radians.
-            body_rotation: Body rotation angle in radians.
-
-        Returns:
-            Target dictionary ready for JSON serialization.
-
-        """
-        target: dict[str, Any] = {}
-        if head is not None:
-            target["head_pose"] = pose_from_numpy(head).model_dump()
-        elif head_joints is not None:
-            target["head_joints"] = head_joints
-        if antennas is not None:
-            target["antennas"] = [antennas[0], antennas[1]]
-        if body_rotation is not None:
-            target["body_rotation"] = body_rotation
-        return target
+        await self._transport.send(cmd.model_dump_json())
 
     async def _on_message(self, message: str) -> None:
         """Handle incoming message from transport."""
@@ -223,7 +207,7 @@ class StreamClient:
         """
         self._event_handlers["status"] = asyncio.Queue()
         try:
-            await self._send({"cmd": "get_status"})
+            await self._send_cmd(GetStatusCommand())
             event = await asyncio.wait_for(
                 self._event_handlers["status"].get(), timeout=5.0
             )
@@ -249,12 +233,7 @@ class StreamClient:
             frequency: Update frequency in Hz (max 100).
 
         """
-        cmd = {"cmd": "subscribe", "frequency": frequency}
-        if fields is not None:
-            cmd["fields"] = fields
-        if sensors is not None:
-            cmd["sensors"] = sensors
-        await self._send(cmd)
+        await self._send_cmd(SubscribeCommand(fields=fields, sensors=sensors, frequency=frequency))
 
     async def set_mode(self, mode: MotorControlMode) -> None:
         """Set motor control mode.
@@ -265,7 +244,7 @@ class StreamClient:
         """
         self._event_handlers["mode_changed"] = asyncio.Queue()
         try:
-            await self._send({"cmd": "set_mode", "mode": mode.value})
+            await self._send_cmd(SetModeCommand(mode=mode))
             await asyncio.wait_for(
                 self._event_handlers["mode_changed"].get(), timeout=5.0
             )
@@ -291,8 +270,13 @@ class StreamClient:
             body_rotation: Body rotation angle in radians.
 
         """
-        target = self._build_target(head, head_joints, antennas, body_rotation)
-        await self._send({"cmd": "target", "target": target})
+        target = FullBodyTarget(
+            head_pose=pose_from_numpy(head) if head is not None else None,
+            head_joints=head_joints if head is None else None,
+            antennas=tuple(antennas) if antennas is not None else None,
+            body_rotation=body_rotation,
+        )
+        await self._send_cmd(TargetCommand(target=target))
 
     async def goto(
         self,
@@ -320,14 +304,19 @@ class StreamClient:
             Final move status.
 
         """
-        request = self._build_target(head, head_joints, antennas, body_rotation)
-        request["duration"] = duration
-        request["interpolation"] = interpolation.value
+        request = GotoRequest(
+            head_pose=pose_from_numpy(head) if head is not None else None,
+            head_joints=head_joints if head is None else None,
+            antennas=tuple(antennas) if antennas is not None else None,
+            body_rotation=body_rotation,
+            duration=duration,
+            interpolation=interpolation,
+        )
 
         # Register handler for goto_done (blocking mode)
         self._event_handlers["goto_done"] = asyncio.Queue()
         try:
-            await self._send({"cmd": "goto", "request": request})
+            await self._send_cmd(GotoCommand(request=request))
 
             # Wait for goto_done event
             event = await asyncio.wait_for(
@@ -366,19 +355,22 @@ class StreamClient:
             Move ID for tracking.
 
         """
-        import uuid
-
         if move_id is None:
             move_id = str(uuid.uuid4())
 
-        request = self._build_target(head, head_joints, antennas, body_rotation)
-        request["duration"] = duration
-        request["interpolation"] = interpolation.value
+        request = GotoRequest(
+            head_pose=pose_from_numpy(head) if head is not None else None,
+            head_joints=head_joints if head is None else None,
+            antennas=tuple(antennas) if antennas is not None else None,
+            body_rotation=body_rotation,
+            duration=duration,
+            interpolation=interpolation,
+        )
 
         # Set up future for completion tracking
         self._pending_gotos[move_id] = asyncio.get_event_loop().create_future()
 
-        await self._send({"cmd": "goto", "request": request, "id": move_id})
+        await self._send_cmd(GotoCommand(request=request, id=move_id))
         return move_id
 
     async def wait_for_goto(self, move_id: MoveId, timeout: float = 30.0) -> MoveStatus:
@@ -412,7 +404,7 @@ class StreamClient:
         """
         self._event_handlers["cancelled"] = asyncio.Queue()
         try:
-            await self._send({"cmd": "cancel", "id": move_id})
+            await self._send_cmd(CancelCommand(id=move_id))
             await asyncio.wait_for(self._event_handlers["cancelled"].get(), timeout=5.0)
         finally:
             del self._event_handlers["cancelled"]
@@ -475,7 +467,7 @@ class StreamClient:
         """
         self._event_handlers["automatic_body_rotation_changed"] = asyncio.Queue()
         try:
-            await self._send({"cmd": "set_automatic_body_rotation", "enabled": enabled})
+            await self._send_cmd(SetAutomaticBodyRotationCommand(enabled=enabled))
             await asyncio.wait_for(
                 self._event_handlers["automatic_body_rotation_changed"].get(),
                 timeout=5.0,
@@ -503,7 +495,7 @@ class StreamClient:
         """
         self._event_handlers["daemon_status"] = asyncio.Queue()
         try:
-            await self._send({"cmd": "get_daemon_status"})
+            await self._send_cmd(GetDaemonStatusCommand())
             event = await asyncio.wait_for(
                 self._event_handlers["daemon_status"].get(), timeout=5.0
             )

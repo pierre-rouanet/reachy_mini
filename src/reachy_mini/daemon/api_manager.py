@@ -6,6 +6,7 @@ the FastAPI HTTP server for REST API and WebSocket endpoints.
 
 import asyncio
 import logging
+import socket
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,6 +22,25 @@ from reachy_mini.daemon.args import DaemonArgs
 
 if TYPE_CHECKING:
     from reachy_mini.daemon.daemon import Daemon
+
+
+def is_port_available(host: str, port: int) -> bool:
+    """Check if a port is available for binding.
+
+    Args:
+        host: The host address to check.
+        port: The port number to check.
+
+    Returns:
+        True if the port is available, False if already in use.
+
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
 
 
 class ApiManager:
@@ -243,6 +263,13 @@ class ApiManager:
         if self._server_thread is not None and self._server_thread.is_alive():
             self.logger.warning("Server is already running.")
             return
+
+        # Check if port is available before attempting to start
+        if not is_port_available(args.fastapi_host, args.fastapi_port):
+            raise RuntimeError(
+                f"Port {args.fastapi_port} is already in use on {args.fastapi_host}. "
+                "Another daemon or process may be running on this port."
+            )
 
         app = self.create_fastapi_app(args, health_check_event)
 

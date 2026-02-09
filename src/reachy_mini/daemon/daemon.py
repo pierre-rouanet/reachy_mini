@@ -19,7 +19,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, Optional
 
 from reachy_mini.apps.manager import AppManager
-from reachy_mini.daemon.api_manager import ApiManager
+from reachy_mini.daemon.api_manager import ApiManager, is_port_available
 from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.models import DaemonStatus
 from reachy_mini.daemon.utils import get_ip_address
@@ -206,6 +206,14 @@ class Daemon:
         self._state = DaemonState.STARTING
         # Clear previous error
         self._error = None
+
+        # 0. Check port availability early (before starting motor controller)
+        # This prevents hanging when another daemon is running
+        if not is_port_available(self._config.fastapi_host, self._config.fastapi_port):
+            raise RuntimeError(
+                f"Port {self._config.fastapi_port} is already in use on {self._config.fastapi_host}. "
+                "Another daemon or process may be running on this port."
+            )
 
         # 1. Start the audio manager (if audio enabled)
         if self._config.use_audio:

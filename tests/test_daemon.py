@@ -204,3 +204,13 @@ async def test_daemon_early_stop_get_state() -> None:
             daemon_stopped.set()
 
         await asyncio.gather(client_bg(), will_stop_soon())
+
+
+@pytest.mark.asyncio
+async def test_daemon_duplicate_port_fails_fast() -> None:
+    """Test that starting a second daemon on the same port fails immediately with clear error."""
+    async with Daemon(_TEST_CONFIG):
+        # Try to start a second daemon on the same port - should fail immediately
+        with pytest.raises(RuntimeError, match="Port .* is already in use"):
+            async with Daemon(_TEST_CONFIG):
+                pass
