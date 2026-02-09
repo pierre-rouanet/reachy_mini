@@ -71,6 +71,7 @@ class StreamClient:
         self.port = port
 
         # Create default WebSocket transport if none provided
+        # TODO: Make it possible to automatically find the best suitable transport.
         if transport is None:
             from reachy_mini.sdk_client.transports import WebSocketClientTransport
 
@@ -123,6 +124,39 @@ class StreamClient:
     async def _send(self, cmd: dict[str, Any]) -> None:
         """Send a command to the server."""
         await self._transport.send(json.dumps(cmd))
+
+    def _build_target(
+        self,
+        head: Optional[npt.NDArray[np.float64]] = None,
+        head_joints: Optional[List[float]] = None,
+        antennas: Optional[Union[npt.NDArray[np.float64], List[float]]] = None,
+        body_rotation: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Build target dict for commands.
+
+        For head control, use either head (task-space) OR head_joints (joint-space),
+        not both. If both are provided, head (task-space) takes precedence.
+
+        Args:
+            head: 4x4 pose matrix for head target (task-space control).
+            head_joints: 6 stewart platform joint positions in radians (joint-space control).
+            antennas: [right_angle, left_angle] in radians.
+            body_rotation: Body rotation angle in radians.
+
+        Returns:
+            Target dictionary ready for JSON serialization.
+
+        """
+        target: dict[str, Any] = {}
+        if head is not None:
+            target["head_pose"] = pose_from_numpy(head).model_dump()
+        elif head_joints is not None:
+            target["head_joints"] = head_joints
+        if antennas is not None:
+            target["antennas"] = [antennas[0], antennas[1]]
+        if body_rotation is not None:
+            target["body_rotation"] = body_rotation
+        return target
 
     async def _on_message(self, message: str) -> None:
         """Handle incoming message from transport."""
@@ -257,16 +291,7 @@ class StreamClient:
             body_rotation: Body rotation angle in radians.
 
         """
-        target: dict[str, Any] = {}
-        if head is not None:
-            target["head_pose"] = pose_from_numpy(head).model_dump()
-        elif head_joints is not None:
-            target["head_joints"] = head_joints
-        if antennas is not None:
-            target["antennas"] = [antennas[0], antennas[1]]
-        if body_rotation is not None:
-            target["body_rotation"] = body_rotation
-
+        target = self._build_target(head, head_joints, antennas, body_rotation)
         await self._send({"cmd": "target", "target": target})
 
     async def goto(
@@ -295,18 +320,9 @@ class StreamClient:
             Final move status.
 
         """
-        request: dict[str, Any] = {
-            "duration": duration,
-            "interpolation": interpolation.value,
-        }
-        if head is not None:
-            request["head_pose"] = pose_from_numpy(head).model_dump()
-        elif head_joints is not None:
-            request["head_joints"] = head_joints
-        if antennas is not None:
-            request["antennas"] = [antennas[0], antennas[1]]
-        if body_rotation is not None:
-            request["body_rotation"] = body_rotation
+        request = self._build_target(head, head_joints, antennas, body_rotation)
+        request["duration"] = duration
+        request["interpolation"] = interpolation.value
 
         # Register handler for goto_done (blocking mode)
         self._event_handlers["goto_done"] = asyncio.Queue()
@@ -355,18 +371,9 @@ class StreamClient:
         if move_id is None:
             move_id = str(uuid.uuid4())
 
-        request: dict[str, Any] = {
-            "duration": duration,
-            "interpolation": interpolation.value,
-        }
-        if head is not None:
-            request["head_pose"] = pose_from_numpy(head).model_dump()
-        elif head_joints is not None:
-            request["head_joints"] = head_joints
-        if antennas is not None:
-            request["antennas"] = [antennas[0], antennas[1]]
-        if body_rotation is not None:
-            request["body_rotation"] = body_rotation
+        request = self._build_target(head, head_joints, antennas, body_rotation)
+        request["duration"] = duration
+        request["interpolation"] = interpolation.value
 
         # Set up future for completion tracking
         self._pending_gotos[move_id] = asyncio.get_event_loop().create_future()
@@ -392,9 +399,7 @@ class StreamClient:
             raise ValueError(f"Unknown move ID: {move_id}")
 
         try:
-            return await asyncio.wait_for(
-                self._pending_gotos[move_id], timeout=timeout
-            )
+            return await asyncio.wait_for(self._pending_gotos[move_id], timeout=timeout)
         finally:
             self._pending_gotos.pop(move_id, None)
 
@@ -408,9 +413,7 @@ class StreamClient:
         self._event_handlers["cancelled"] = asyncio.Queue()
         try:
             await self._send({"cmd": "cancel", "id": move_id})
-            await asyncio.wait_for(
-                self._event_handlers["cancelled"].get(), timeout=5.0
-            )
+            await asyncio.wait_for(self._event_handlers["cancelled"].get(), timeout=5.0)
         finally:
             del self._event_handlers["cancelled"]
             self._pending_gotos.pop(move_id, None)
@@ -474,7 +477,8 @@ class StreamClient:
         try:
             await self._send({"cmd": "set_automatic_body_rotation", "enabled": enabled})
             await asyncio.wait_for(
-                self._event_handlers["automatic_body_rotation_changed"].get(), timeout=5.0
+                self._event_handlers["automatic_body_rotation_changed"].get(),
+                timeout=5.0,
             )
         finally:
             del self._event_handlers["automatic_body_rotation_changed"]
