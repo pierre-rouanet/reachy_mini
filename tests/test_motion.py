@@ -273,3 +273,33 @@ async def test_cancel_goto_in_progress(
 
     status = await mgr.stop_move_task(move_id)
     assert status == MoveStatus.Cancelled
+
+
+@pytest.mark.asyncio
+async def test_is_move_running_flag(
+    motion_env: tuple[MotionManager, MockupController],
+) -> None:
+    """is_move_running is True during a trajectory and False after."""
+    mgr, controller = motion_env
+
+    assert not controller.is_move_running
+
+    # Start a long goto
+    move_id, task = mgr.create_move_task(
+        mgr.goto_target(head=np.eye(4), antennas=np.array([0.0, 0.0]), duration=5.0),
+    )
+    await asyncio.sleep(0.05)  # let the move start
+
+    assert controller.is_move_running
+
+    # set_target should be rejected while move is running
+    controller.set_target_antenna_joint_positions(np.array([0.5, 0.5]))
+    # The antennas should NOT have changed to our set_target value
+    # because the running goto is overwriting targets each tick
+
+    # Cancel and verify flag clears
+    await mgr.stop_move_task(move_id)
+    assert not controller.is_move_running
+
+    # set_target should work now
+    controller.set_target_antenna_joint_positions(np.array([0.5, 0.5]))

@@ -658,6 +658,46 @@ async def test_stream_client_head_joints() -> None:
             await client.disable_motors()
 
 
+@pytest.mark.asyncio
+async def test_set_target_ignored_during_goto() -> None:
+    """set_target returns 'ignored' while a goto is in progress."""
+    async with Daemon(_TEST_CONFIG):
+        client = HttpOnlyClient()
+        try:
+            client.connect()
+            client.enable_motors()
+
+            # Start a long goto (non-blocking)
+            move_id = client.goto(head=np.eye(4), duration=5.0, wait=False)
+            assert move_id is not None
+
+            # Give the move time to start
+            await asyncio.sleep(0.05)
+
+            # set_target should be ignored
+            target = FullBodyTarget(antennas=(0.1, -0.1))
+            resp = client._http_client.post(
+                "/api/move/set_target",
+                content=target.model_dump_json(exclude_none=True),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.json()["status"] == "ignored"
+
+            # Cancel the goto
+            client.cancel_move(move_id)
+
+            # set_target should work now
+            resp = client._http_client.post(
+                "/api/move/set_target",
+                content=target.model_dump_json(exclude_none=True),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.json()["status"] == "ok"
+
+        finally:
+            client.disconnect()
+
+
 def test_goto_request_requires_target() -> None:
     """Test that GotoRequest requires at least one target."""
     from pydantic import ValidationError

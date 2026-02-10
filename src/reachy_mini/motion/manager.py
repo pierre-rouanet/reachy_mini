@@ -94,7 +94,9 @@ class MotionManager:
         self._completed: dict[MoveId, MoveStatus] = {}
         self._max_completed_cache = 100
 
-    def set_motor_controller(self, motor_controller: Optional["MotorController"]) -> None:
+    def set_motor_controller(
+        self, motor_controller: Optional["MotorController"]
+    ) -> None:
         """Set the motor controller reference."""
         self._motor_controller = motor_controller
 
@@ -254,7 +256,9 @@ class MotionManager:
             target_head_pose=head,
             start_body_yaw=self._motor_controller.get_present_body_yaw(),
             target_body_yaw=body_yaw,
-            start_antennas=np.array(self._motor_controller.get_present_antenna_joint_positions()),
+            start_antennas=np.array(
+                self._motor_controller.get_present_antenna_joint_positions()
+            ),
             target_antennas=np.array(antennas) if antennas is not None else None,
             duration=duration,
             method=method,
@@ -278,13 +282,16 @@ class MotionManager:
         if self._motor_controller is None:
             raise RuntimeError("Motor controller not available")
 
-        if not self._motor_controller._try_start_move():
+        if self._motor_controller.is_move_running:
             self.logger.warning("Ignoring play_move request: another move is running.")
             return
 
+        self._motor_controller._start_move()
         try:
             if initial_goto_duration > 0.0:
-                start_head_pose, start_antennas_positions, start_body_yaw = move.evaluate(0.0)
+                start_head_pose, start_antennas_positions, start_body_yaw = (
+                    move.evaluate(0.0)
+                )
                 await self.goto_target(
                     head=start_head_pose,
                     antennas=start_antennas_positions,

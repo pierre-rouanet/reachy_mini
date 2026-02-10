@@ -410,8 +410,4 @@ class RobotController(MotorController):
 
         return errors
 
-    def write_raw_packet(self, packet: bytes) -> bytes:
-        """Write a raw packet to the motor controller and return the response."""
-        assert self.c is not None, "Motor controller not initialized or already closed."
-        result: bytes = bytes(self.c.write_raw_packet(packet))
-        return result
+

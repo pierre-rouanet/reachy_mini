@@ -171,11 +171,9 @@ class MotorController(ABC):
             "m": 0.5e-3,  # m
         }
 
-        # Guard to ensure only one play_move/goto is executed at a time (goto itself uses play_move, so we need an RLock)
-        self._play_move_lock = threading.RLock()
-        self._active_move_depth = (
-            0  # Tracks nested acquisitions within the owning thread
-        )
+        # Flag to signal that a trajectory move (goto/play_move) is in progress.
+        # Used by set_target handlers to avoid fighting with running trajectories.
+        self._move_running = False
 
         # Stats tracking
         self._stats_record_period = 1.0  # seconds
@@ -355,21 +353,16 @@ class MotorController(ABC):
 
     @property
     def is_move_running(self) -> bool:
-        """Return True if a move is currently executing."""
-        return self._active_move_depth > 0
+        """Return True if a trajectory move is currently executing."""
+        return self._move_running
 
-    def _try_start_move(self) -> bool:
-        """Attempt to acquire the move guard, returning False if another client already owns it."""
-        if not self._play_move_lock.acquire(blocking=False):
-            return False
-        self._active_move_depth += 1
-        return True
+    def _start_move(self) -> None:
+        """Mark that a trajectory move has started."""
+        self._move_running = True
 
     def _end_move(self) -> None:
-        """Release the move guard; paired with every successful _try_start_move()."""
-        if self._active_move_depth > 0:
-            self._active_move_depth -= 1
-        self._play_move_lock.release()
+        """Mark that a trajectory move has ended."""
+        self._move_running = False
 
     def get_status(self) -> MotorControllerStatus:
         """Return backend status.
@@ -632,20 +625,6 @@ class MotorController(ABC):
     def set_motor_torque_ids(self, ids: list[str], on: bool) -> None:
         """Set the motor torque for specific motor names."""
         pass
-
-    def write_raw_packet(self, packet: bytes) -> bytes:
-        """Write a raw packet to the motor controller and return the response.
-
-        Args:
-            packet (bytes): The raw packet to send to the motor controller.
-
-        Returns:
-            bytes: The raw response packet from the motor controller.
-
-        """
-        raise NotImplementedError(
-            "The method write_raw_packet is only available for the real robot backend."
-        )
 
     def get_present_passive_joint_positions(self) -> Optional[Dict[str, float]]:
         """Get the present passive joint positions.
