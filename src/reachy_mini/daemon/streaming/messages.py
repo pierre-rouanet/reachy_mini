@@ -209,7 +209,9 @@ class StatusEvent(BaseModel):
 class AutomaticBodyRotationChangedEvent(BaseModel):
     """Automatic body rotation setting changed."""
 
-    event: Literal["automatic_body_rotation_changed"] = "automatic_body_rotation_changed"
+    event: Literal["automatic_body_rotation_changed"] = (
+        "automatic_body_rotation_changed"
+    )
     enabled: bool
 
 

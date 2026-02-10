@@ -115,9 +115,7 @@ class DataChannelTransport(StreamingTransport):
         if not self._connected or self._message_callback is None:
             return
 
-        asyncio.run_coroutine_threadsafe(
-            self._message_callback(message), self._loop
-        )
+        asyncio.run_coroutine_threadsafe(self._message_callback(message), self._loop)
 
     def notify_close(self) -> None:
         """Notify that the data channel has closed.
@@ -128,6 +126,4 @@ class DataChannelTransport(StreamingTransport):
         self._connected = False
 
         if self._close_callback is not None:
-            asyncio.run_coroutine_threadsafe(
-                self._close_callback(), self._loop
-            )
+            asyncio.run_coroutine_threadsafe(self._close_callback(), self._loop)

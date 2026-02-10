@@ -143,9 +143,7 @@ class WebRTCClientTransport(ClientTransport):
         # Wait for data channel to open
         if not self._channel_open.wait(timeout=timeout):
             self._stop_pipeline()
-            raise ConnectionError(
-                f"Data channel did not open within {timeout}s"
-            )
+            raise ConnectionError(f"Data channel did not open within {timeout}s")
 
         logger.info("Connected via WebRTC data channel to %s", self._uri)
 
@@ -222,9 +220,7 @@ class WebRTCClientTransport(ClientTransport):
         pad.link(sink.get_static_pad("sink"))
         sink.sync_state_with_parent()
 
-    def _on_data_channel(
-        self, _webrtcbin: Gst.Element, channel: Any
-    ) -> None:
+    def _on_data_channel(self, _webrtcbin: Gst.Element, channel: Any) -> None:
         """Handle incoming data channel from server."""
         logger.debug("Data channel received: %s", channel.get_property("label"))
         self._data_channel = channel
@@ -245,9 +241,7 @@ class WebRTCClientTransport(ClientTransport):
         self._data_channel = None
 
         if self._close_callback is not None and self._loop is not None:
-            asyncio.run_coroutine_threadsafe(
-                self._close_callback(), self._loop
-            )
+            asyncio.run_coroutine_threadsafe(self._close_callback(), self._loop)
 
     def _on_channel_message(self, _channel: Any, message: str) -> None:
         """Handle incoming data channel message."""
