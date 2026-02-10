@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 def is_port_available(host: str, port: int) -> bool:
     """Check if a port is available for binding.
 
+    Uses SO_REUSEADDR to match uvicorn's socket options. Without this,
+    TIME_WAIT connections from recently closed WebSocket connections
+    would cause false negatives on macOS.
+
     Args:
         host: The host address to check.
         port: The port number to check.
@@ -36,6 +40,7 @@ def is_port_available(host: str, port: int) -> bool:
 
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
             return True
@@ -73,6 +78,8 @@ class ApiManager:
         self._fastapi_app: FastAPI | None = None
         self._uvicorn_server: uvicorn.Server | None = None
         self._server_thread: threading.Thread | None = None
+        self._last_host: str = "0.0.0.0"
+        self._last_port: int = 8000
 
     def __del__(self) -> None:
         """Destructor to ensure proper cleanup."""
@@ -271,6 +278,10 @@ class ApiManager:
                 "Another daemon or process may be running on this port."
             )
 
+        # Track host/port for cleanup
+        self._last_host = args.fastapi_host
+        self._last_port = args.fastapi_port
+
         app = self.create_fastapi_app(args, health_check_event)
 
         config = uvicorn.Config(
@@ -322,4 +333,14 @@ class ApiManager:
 
         self._server_thread = None
         self._uvicorn_server = None
+
+        # Wait for port to be fully released (OS may keep socket in TIME_WAIT)
+        port_timeout = 5.0
+        port_elapsed = 0.0
+        while not is_port_available(self._last_host, self._last_port) and port_elapsed < port_timeout:
+            await asyncio.sleep(0.1)
+            port_elapsed += 0.1
+        if port_elapsed > 0:
+            self.logger.debug(f"Waited {port_elapsed:.1f}s for port {self._last_port} to be released")
+
         self.logger.info("FastAPI server stopped.")
