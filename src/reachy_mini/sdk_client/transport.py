@@ -1,21 +1,24 @@
 """Client-side transport interface.
 
-Extends the shared Transport ABC with client-specific methods
+Extends the StreamingTransport ABC with client-specific methods
 for connection establishment (connect/disconnect).
 """
 
 from abc import abstractmethod
 
-from reachy_mini.streaming.transport import CloseCallback, MessageCallback, Transport
+from reachy_mini.daemon.streaming.transport import (
+    CloseCallback,
+    MessageCallback,
+    StreamingTransport,
+)
 
-# Re-export for convenience
 __all__ = ["ClientTransport", "MessageCallback", "CloseCallback"]
 
 
-class ClientTransport(Transport):
+class ClientTransport(StreamingTransport):
     """Transport for SDK clients.
 
-    Extends the base Transport with:
+    Extends the base StreamingTransport with:
     - connect(): Establish connection to server
     - disconnect(): Clean disconnection
     - uri: Connection URI property
