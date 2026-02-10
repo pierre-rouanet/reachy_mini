@@ -51,7 +51,6 @@ async def unified_stream(websocket: WebSocket) -> None:
     handler = ProtocolHandler(
         motor_controller=motor_controller,
         motion_manager=daemon.motion_manager,
-        move_tracker=daemon.move_tracker,
         audio=daemon.audio,
         daemon=daemon,
     )

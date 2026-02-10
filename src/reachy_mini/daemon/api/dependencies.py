@@ -3,7 +3,6 @@
 from fastapi import HTTPException, Request, WebSocket
 
 from reachy_mini.media.media_manager import MediaManager
-from reachy_mini.motion import MoveTracker
 from reachy_mini.motion.manager import MotionManager
 from reachy_mini.motor_controller.abstract import MotorController
 
@@ -39,11 +38,6 @@ def get_motion_manager(request: Request) -> MotionManager:
 def get_audio(request: Request) -> MediaManager | None:
     """Get the audio manager as request dependency (may be None if audio disabled)."""
     return get_daemon(request).audio
-
-
-def get_move_tracker(request: Request) -> MoveTracker:
-    """Get the move tracker as request dependency."""
-    return get_daemon(request).move_tracker
 
 
 def get_app_manager(request: Request) -> "AppManager":

@@ -31,7 +31,7 @@ Example usage:
 import logging
 import os
 from threading import Thread
-from typing import Callable, Optional, Tuple, cast
+from typing import Any, Callable, Optional, Tuple, cast
 
 import gi
 
@@ -123,6 +123,8 @@ class GstWebRTC:
         self._logger.debug("Configuring data channel")
         self._data_channels: dict[str, Gst.Element] = {}  # peer_id -> channel
         self._on_data_message: Optional[Callable[[str, str], None]] = None
+        self._on_data_open: Optional[Callable[[Any, str], None]] = None
+        self._on_data_close: Optional[Callable[[Any, str], None]] = None
 
         self._pipeline_receiver = Gst.Pipeline.new("reachymini_webrtc_receiver")
         self._bus_receiver = self._pipeline_receiver.get_bus()
@@ -464,11 +466,39 @@ class GstWebRTC:
         else:
             self._logger.error(f"Failed to create data channel for peer {peer_id}")
 
+    def set_open_handler(
+        self,
+        handler: Callable[[Any, str], None],  # cb(channel, peer_id)
+    ) -> None:
+        """Set a callback for data channel open events.
+
+        Args:
+            handler: Callback function that receives (channel, peer_id)
+
+        """
+        self._on_data_open = handler
+
+    def set_close_handler(
+        self,
+        handler: Callable[[Any, str], None],  # cb(channel, peer_id)
+    ) -> None:
+        """Set a callback for data channel close events.
+
+        Args:
+            handler: Callback function that receives (channel, peer_id)
+
+        """
+        self._on_data_close = handler
+
     def _on_data_channel_open(self, channel: Gst.Element, peer_id: str) -> None:
         self._logger.info(f"Data channel opened for peer {peer_id}")
+        if self._on_data_open:
+            self._on_data_open(channel, peer_id)
 
     def _on_data_channel_close(self, channel: Gst.Element, peer_id: str) -> None:
         self._logger.info(f"Data channel closed for peer {peer_id}")
+        if self._on_data_close:
+            self._on_data_close(channel, peer_id)
         if peer_id in self._data_channels:
             del self._data_channels[peer_id]
 

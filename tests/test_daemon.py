@@ -118,9 +118,9 @@ async def test_daemon_faulty_audio_backend_still_running() -> None:
             assert daemon.motor_controller.ready.is_set()
 
             # MotionManager should handle missing audio gracefully
-            # (play_sound/stop_sound should be no-ops when audio is None)
-            daemon.motion_manager.play_sound("wake_up.wav")  # Should not raise
-            daemon.motion_manager.stop_sound()  # Should not raise
+            # (_play_sound/_stop_sound should be no-ops when audio is None)
+            daemon.motion_manager._play_sound("wake_up.wav")  # Should not raise
+            daemon.motion_manager._stop_sound()  # Should not raise
 
         finally:
             await daemon.stop()

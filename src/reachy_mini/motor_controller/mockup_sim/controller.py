@@ -39,17 +39,12 @@ class MockupController(MotorController):
             kinematics_engine=kinematics_engine,
         )
 
-        from reachy_mini.sdk_client.reachy_mini import (
-            SLEEP_ANTENNAS_JOINT_POSITIONS,
-            SLEEP_HEAD_JOINT_POSITIONS,
-        )
-
-        # Initialize with sleep positions
+        # Initialize with sleep positions (7-element head: body_yaw + 6 stewart joints)
         self._head_joint_positions: npt.NDArray[np.float64] = np.array(
-            SLEEP_HEAD_JOINT_POSITIONS, dtype=np.float64
+            self.SLEEP_HEAD_JOINT_POSITIONS, dtype=np.float64
         )
         self._antenna_joint_positions: npt.NDArray[np.float64] = np.array(
-            SLEEP_ANTENNAS_JOINT_POSITIONS, dtype=np.float64
+            self.SLEEP_ANTENNAS_JOINT_POSITIONS, dtype=np.float64
         )
 
         # Set initial motor control mode

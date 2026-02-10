@@ -1,13 +1,15 @@
 """Motion manager for Reachy Mini robot.
 
 This module provides the MotionManager class that orchestrates motion,
-combining motor control and audio for synchronized movements.
+combining motor control, audio, and move task tracking.
 """
 
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Annotated, Optional
+from enum import Enum
+from typing import TYPE_CHECKING, Annotated, Any, Coroutine, Optional
+from uuid import uuid4
 
 import numpy as np
 from numpy.typing import NDArray
@@ -24,12 +26,37 @@ from reachy_mini.utils.interpolation import (
 if TYPE_CHECKING:
     from reachy_mini.motor_controller.abstract import MotorController
 
+# Type alias for move identifiers
+MoveId = str
+
+
+class MoveStatus(str, Enum):
+    """Status of a movement operation."""
+
+    InProgress = "in_progress"
+    Completed = "completed"
+    Failed = "failed"
+    Cancelled = "cancelled"
+    NotFound = "not_found"
+
+
+class DuplicateMoveIdError(Exception):
+    """Raised when a move ID is already in use."""
+
+    def __init__(self, move_id: MoveId) -> None:
+        """Initialize with the duplicate move ID."""
+        self.move_id = move_id
+        super().__init__(f"Move ID '{move_id}' is already in use")
+
 
 class MotionManager:
-    """Manages robot motion with synchronized audio.
+    """Manages robot motion with synchronized audio and move tracking.
 
     Orchestrates movement commands that require both motor control and audio,
     such as wake_up, goto_sleep, and play_move with sound.
+
+    Also tracks async move tasks (goto, play, etc.) for lifecycle management:
+    creating, querying status, and cancelling in-progress moves.
     """
 
     # Basic pose definitions
@@ -62,6 +89,11 @@ class MotionManager:
         self._motor_controller: Optional["MotorController"] = None
         self._audio: Optional[MediaManager] = None
 
+        # Move task tracking
+        self._tasks: dict[MoveId, asyncio.Task[None]] = {}
+        self._completed: dict[MoveId, MoveStatus] = {}
+        self._max_completed_cache = 100
+
     def set_motor_controller(self, motor_controller: Optional["MotorController"]) -> None:
         """Set the motor controller reference."""
         self._motor_controller = motor_controller
@@ -70,14 +102,9 @@ class MotionManager:
         """Set the audio manager reference."""
         self._audio = audio
 
-    @property
-    def motor_controller(self) -> Optional["MotorController"]:
-        """Get the motor controller."""
-        return self._motor_controller
+    # --- Audio methods (internal) ---
 
-    # Audio methods
-
-    def play_sound(self, sound_file: str) -> None:
+    def _play_sound(self, sound_file: str) -> None:
         """Play a sound file.
 
         Args:
@@ -88,12 +115,118 @@ class MotionManager:
             self._audio.start_playing()
             self._audio.play_sound(sound_file)
 
-    def stop_sound(self) -> None:
+    def _stop_sound(self) -> None:
         """Stop any currently playing sound."""
         if self._audio:
             self._audio.stop_playing()
 
-    # Motion methods
+    # --- Move tracking methods ---
+
+    @staticmethod
+    def task_status(task: asyncio.Task[None]) -> MoveStatus:
+        """Derive the status of a completed asyncio.Task.
+
+        Args:
+            task: A finished task.
+
+        Returns:
+            MoveStatus based on the task outcome.
+
+        """
+        if task.cancelled():
+            return MoveStatus.Cancelled
+        if task.exception() is not None:
+            return MoveStatus.Failed
+        return MoveStatus.Completed
+
+    def get_running_moves(self) -> list[MoveId]:
+        """Get list of currently running move IDs."""
+        return list(self._tasks.keys())
+
+    def is_move_in_progress(self, move_id: MoveId) -> bool:
+        """Check if a move ID is currently in progress."""
+        return move_id in self._tasks
+
+    def get_move_status(self, move_id: MoveId) -> MoveStatus:
+        """Get the status of a move.
+
+        Args:
+            move_id: The move ID to check.
+
+        Returns:
+            MoveStatus indicating current state.
+
+        """
+        if move_id in self._tasks:
+            return MoveStatus.InProgress
+        if move_id in self._completed:
+            return self._completed[move_id]
+        return MoveStatus.NotFound
+
+    def create_move_task(
+        self,
+        coro: Coroutine[Any, Any, None],
+        move_id: MoveId | None = None,
+    ) -> tuple[MoveId, asyncio.Task[None]]:
+        """Create and track a new move task.
+
+        Args:
+            coro: The coroutine to run as the move task.
+            move_id: Optional client-provided move ID. If None, a UUID is generated.
+
+        Returns:
+            Tuple of (move_id, task).
+
+        Raises:
+            DuplicateMoveIdError: If the provided move_id is already in use.
+
+        """
+        if move_id is None:
+            move_id = str(uuid4())
+        elif self.is_move_in_progress(move_id):
+            raise DuplicateMoveIdError(move_id)
+
+        task = asyncio.create_task(coro)
+        self._tasks[move_id] = task
+        task.add_done_callback(lambda _t: self._on_move_done(move_id, _t))
+
+        return move_id, task
+
+    async def stop_move_task(self, move_id: MoveId) -> MoveStatus:
+        """Stop a running move task by cancelling it.
+
+        Args:
+            move_id: The move ID to stop.
+
+        Returns:
+            MoveStatus.Cancelled if stopped, MoveStatus.NotFound if not found.
+
+        """
+        task = self._tasks.get(move_id)
+        if task is None:
+            return MoveStatus.NotFound
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        return MoveStatus.Cancelled
+
+    def _on_move_done(self, move_id: MoveId, task: asyncio.Task[None]) -> None:
+        """Done callback: clean up _tasks and cache terminal status."""
+        self._tasks.pop(move_id, None)
+        self._cache_completed(move_id, self.task_status(task))
+
+    def _cache_completed(self, move_id: MoveId, status: MoveStatus) -> None:
+        """Cache a completed move status, evicting oldest if at capacity."""
+        if len(self._completed) >= self._max_completed_cache:
+            oldest = next(iter(self._completed))
+            self._completed.pop(oldest)
+        self._completed[move_id] = status
+
+    # --- Motion methods ---
 
     async def goto_target(
         self,
@@ -161,7 +294,7 @@ class MotionManager:
             sleep_period = 1.0 / play_frequency
 
             if move.sound_path is not None:
-                self.play_sound(str(move.sound_path))
+                self._play_sound(str(move.sound_path))
 
             t0 = time.time()
             while time.time() - t0 < move.duration:
@@ -182,7 +315,7 @@ class MotionManager:
                     await asyncio.sleep(0.001)
         finally:
             if move.sound_path is not None:
-                self.stop_sound()
+                self._stop_sound()
             self._motor_controller._end_move()
 
     async def wake_up(self) -> None:
@@ -204,7 +337,7 @@ class MotionManager:
         await asyncio.sleep(0.1)
 
         # Toudoum
-        self.play_sound("wake_up.wav")
+        self._play_sound("wake_up.wav")
 
         # Roll 20° to the left
         pose = self.INIT_HEAD_POSE.copy()
@@ -213,7 +346,7 @@ class MotionManager:
 
         # Go back to the initial position
         await self.goto_target(self.INIT_HEAD_POSE, duration=0.2)
-        self.stop_sound()
+        self._stop_sound()
 
     async def goto_sleep(self) -> None:
         """Put the robot to sleep - move to sleep position and play sleep sound."""
@@ -235,7 +368,7 @@ class MotionManager:
                 )
                 await asyncio.sleep(0.2)
 
-            self.play_sound("go_sleep.wav")
+            self._play_sound("go_sleep.wav")
 
             await self.goto_target(
                 self.SLEEP_HEAD_POSE,
@@ -243,8 +376,8 @@ class MotionManager:
                 duration=2,
             )
         else:
-            self.play_sound("go_sleep.wav")
+            self._play_sound("go_sleep.wav")
             sleep_time += 3
 
         await asyncio.sleep(sleep_time)
-        self.stop_sound()
+        self._stop_sound()

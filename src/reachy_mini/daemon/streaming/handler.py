@@ -31,9 +31,7 @@ from reachy_mini.daemon.streaming.messages import (
     SubscribeCommand,
     TargetCommand,
 )
-
-# Import directly from move_tracker to avoid circular import via motion/__init__.py
-from reachy_mini.motion.move_tracker import DuplicateMoveIdError, MoveTracker
+from reachy_mini.motion.manager import DuplicateMoveIdError
 
 if TYPE_CHECKING:
     from reachy_mini.daemon.daemon import Daemon
@@ -61,7 +59,6 @@ class ProtocolHandler:
         self,
         motor_controller: MotorController,
         motion_manager: MotionManager,
-        move_tracker: MoveTracker,
         audio: MediaManager | None,
         daemon: Daemon,
     ) -> None:
@@ -69,15 +66,13 @@ class ProtocolHandler:
 
         Args:
             motor_controller: The motor controller instance.
-            motion_manager: The motion manager for goto operations.
-            move_tracker: The move tracker for goto lifecycle management.
+            motion_manager: The motion manager for goto and move tracking.
             audio: Optional audio/media manager for DoA sensor.
             daemon: The daemon instance for status queries.
 
         """
         self._motor_controller = motor_controller
         self._motion_manager = motion_manager
-        self._move_tracker = move_tracker
         self._audio = audio
         self._daemon = daemon
 
@@ -90,11 +85,6 @@ class ProtocolHandler:
     def motion_manager(self) -> MotionManager:
         """Get the motion manager."""
         return self._motion_manager
-
-    @property
-    def move_tracker(self) -> MoveTracker:
-        """Get the move tracker."""
-        return self._move_tracker
 
     @property
     def audio(self) -> MediaManager | None:
@@ -185,8 +175,12 @@ class ProtocolHandler:
             # 1. Add a goto_joints method to MotionManager, or
             # 2. Convert joints to pose via forward kinematics
             coro = self._motion_manager.goto_target(
-                head=cmd.request.head_pose.to_pose_array() if cmd.request.head_pose else None,
-                antennas=np.array(cmd.request.antennas) if cmd.request.antennas else None,
+                head=cmd.request.head_pose.to_pose_array()
+                if cmd.request.head_pose
+                else None,
+                antennas=np.array(cmd.request.antennas)
+                if cmd.request.antennas
+                else None,
                 body_yaw=cmd.request.body_rotation,
                 duration=cmd.request.duration,
             )
@@ -199,12 +193,16 @@ class ProtocolHandler:
                 ErrorEvent(message=str(e), code="DUPLICATE_MOVE_ID")
             )
 
-    async def _handle_set_mode(self, cmd: SetModeCommand, session: StreamingSession) -> None:
+    async def _handle_set_mode(
+        self, cmd: SetModeCommand, session: StreamingSession
+    ) -> None:
         """Handle set_mode command."""
         self._motor_controller.set_motor_control_mode(cmd.mode)
         await session.send_event(ModeChangedEvent(mode=cmd.mode))
 
-    async def _handle_cancel(self, cmd: CancelCommand, session: StreamingSession) -> None:
+    async def _handle_cancel(
+        self, cmd: CancelCommand, session: StreamingSession
+    ) -> None:
         """Handle cancel command."""
         success = await session.cancel_goto(cmd.id)
         if success:
@@ -217,7 +215,9 @@ class ProtocolHandler:
                 )
             )
 
-    async def _handle_subscribe(self, cmd: SubscribeCommand, session: StreamingSession) -> None:
+    async def _handle_subscribe(
+        self, cmd: SubscribeCommand, session: StreamingSession
+    ) -> None:
         """Handle subscribe command."""
         await session.start_state_stream(cmd)
 
@@ -285,11 +285,15 @@ class ProtocolHandler:
         if include_all or "target_head_pose" in fields:  # type: ignore[operator]
             target_pose = mc.target_head_pose
             if target_pose is not None:
-                result["target_head_pose"] = pose_from_numpy(target_pose, use_pose_matrix)
+                result["target_head_pose"] = pose_from_numpy(
+                    target_pose, use_pose_matrix
+                )
 
         if include_all or "head_joints" in fields:  # type: ignore[operator]
             head_joints = mc.get_present_head_joint_positions()
-            result["head_joints"] = list(head_joints[1:])  # Exclude body_rotation at index 0
+            result["head_joints"] = list(
+                head_joints[1:]
+            )  # Exclude body_rotation at index 0
 
         if include_all or "target_head_joints" in fields:  # type: ignore[operator]
             target = mc.target_head_joint_positions

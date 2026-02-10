@@ -22,7 +22,7 @@ from reachy_mini.daemon.streaming.messages import (
     parse_inbound_message,
 )
 from reachy_mini.daemon.streaming.transport import StreamingTransport
-from reachy_mini.motion import MoveId, MoveStatus
+from reachy_mini.motion import MoveId
 
 if TYPE_CHECKING:
     from reachy_mini.daemon.streaming.handler import ProtocolHandler
@@ -148,32 +148,23 @@ class StreamingSession:
             move_id: Optional client-provided move ID for async mode.
 
         """
-        tracker = self._handler.move_tracker
+        motion = self._handler.motion_manager
 
         # Create the move task (may raise DuplicateMoveIdError)
-        actual_id = tracker.create_move_task(coro, move_id=move_id)
+        actual_id, task = motion.create_move_task(coro, move_id=move_id)
 
         if move_id is not None:
             # Async mode: send started event, track completion
             await self.send_event(GotoStartedEvent(id=actual_id))
-
-            # Get the task and track it
-            task = tracker.get_move_task(actual_id)
-            if task:
-                self._pending_gotos[actual_id] = task
-                asyncio.create_task(self._track_goto_completion(actual_id, task))
+            self._pending_gotos[actual_id] = task
+            asyncio.create_task(self._track_goto_completion(actual_id, task))
         else:
             # Blocking mode: wait for completion
-            task = tracker.get_move_task(actual_id)
-            if task:
-                try:
-                    await task
-                    status = tracker.get_completed_status(actual_id) or MoveStatus.Completed
-                except asyncio.CancelledError:
-                    status = MoveStatus.Cancelled
-                except Exception:
-                    status = MoveStatus.Failed
-                await self.send_event(GotoDoneEvent(status=status))
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            await self.send_event(GotoDoneEvent(status=motion.task_status(task)))
 
     async def cancel_goto(self, move_id: MoveId) -> bool:
         """Cancel a goto operation.
@@ -185,10 +176,10 @@ class StreamingSession:
             True if the move was found and cancelled, False otherwise.
 
         """
-        tracker = self._handler.move_tracker
+        motion = self._handler.motion_manager
 
-        if tracker.is_move_in_progress(move_id):
-            await tracker.stop_move_task(move_id)
+        if motion.is_move_in_progress(move_id):
+            await motion.stop_move_task(move_id)
             return True
         return False
 
@@ -241,17 +232,15 @@ class StreamingSession:
         self, move_id: MoveId, task: asyncio.Task[None]
     ) -> None:
         """Track a goto task and send completion event."""
-        tracker = self._handler.move_tracker
-
+        motion = self._handler.motion_manager
         try:
             await task
-            status = tracker.get_completed_status(move_id) or MoveStatus.Completed
-            await self.send_event(GotoDoneEvent(id=move_id, status=status))
-        except asyncio.CancelledError:
-            await self.send_event(GotoDoneEvent(id=move_id, status=MoveStatus.Cancelled))
-        except Exception:
-            await self.send_event(GotoDoneEvent(id=move_id, status=MoveStatus.Failed))
+        except (asyncio.CancelledError, Exception):
+            pass
         finally:
+            await self.send_event(
+                GotoDoneEvent(id=move_id, status=motion.task_status(task))
+            )
             self._pending_gotos.pop(move_id, None)
 
     async def _stop_state_stream(self) -> None:

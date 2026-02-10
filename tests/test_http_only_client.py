@@ -683,24 +683,3 @@ def test_goto_request_requires_target() -> None:
     assert req.body_rotation == 0.1
 
 
-def test_duplicate_move_id_validation() -> None:
-    """Test that duplicate move IDs are rejected only while in progress."""
-    from reachy_mini.motion import DuplicateMoveIdError, MoveStatus, MoveTracker
-
-    tracker = MoveTracker()
-
-    # New ID should not be in progress
-    assert not tracker.is_move_in_progress("test-id-123")
-
-    # Simulate an active move by manually adding to internal state
-    tracker._tasks["test-id-123"] = None  # type: ignore
-
-    # Now it should be in progress
-    assert tracker.is_move_in_progress("test-id-123")
-
-    # Clean up active, add to completed
-    del tracker._tasks["test-id-123"]
-    tracker._completed["test-id-123"] = MoveStatus.Completed
-
-    # No longer in progress (completed moves don't block reuse)
-    assert not tracker.is_move_in_progress("test-id-123")

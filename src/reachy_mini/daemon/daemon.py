@@ -25,7 +25,6 @@ from reachy_mini.daemon.models import DaemonStatus
 from reachy_mini.daemon.utils import get_ip_address
 from reachy_mini.daemon.webrtc_manager import WebRTCManager
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
-from reachy_mini.motion import MoveTracker
 from reachy_mini.motion.manager import MotionManager
 from reachy_mini.motor_controller.abstract import MotorControlMode
 from reachy_mini.motor_controller.manager import MotorManager
@@ -103,7 +102,6 @@ class Daemon:
         self._motion_manager = MotionManager(
             log_level=self._config.log_level.value,
         )
-        self._move_tracker = MoveTracker()
         self._app_manager = AppManager(
             wireless_version=self._config.wireless_version,
             desktop_app_daemon=self._config.desktop_app_daemon,
@@ -162,11 +160,6 @@ class Daemon:
     def audio(self) -> Optional[MediaManager]:
         """Get the MediaManager instance for audio."""
         return self._audio_manager
-
-    @property
-    def move_tracker(self) -> MoveTracker:
-        """Get the MoveTracker instance."""
-        return self._move_tracker
 
     async def start(self) -> DaemonState:
         """Start the Reachy Mini daemon.
@@ -267,6 +260,7 @@ class Daemon:
 
         # 5. Start WebRTC interface (if enabled and motor controller started)
         if motor_started:
+            self._webrtc_manager.set_daemon(self)
             await self._webrtc_manager.start()
 
         # 6. Start FastAPI server (always start so status can be queried)

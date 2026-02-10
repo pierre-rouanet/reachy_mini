@@ -317,7 +317,9 @@ class MotorController(ABC):
         """
         now = time.time()
         elapsed = now - self._last_tick_time
-        sleep_time = max(0.001, self._tick_period - elapsed)  # At least 1ms to release GIL
+        sleep_time = max(
+            0.001, self._tick_period - elapsed
+        )  # At least 1ms to release GIL
         time.sleep(sleep_time)
         self._last_tick_time = time.time()
 
@@ -590,6 +592,11 @@ class MotorController(ABC):
     # Basic move definitions
     INIT_HEAD_POSE = np.eye(4)
 
+    # TODO: Separate body_rotation from head_joint_positions and make naming clearer.
+    #  Currently index 0 is body_yaw and indices 1-6 are stewart joints,
+    #  but the name "head joint positions" is misleading. Consider:
+    #  - SLEEP_BODY_ROTATION = 0.0
+    #  - SLEEP_STEWART_JOINT_POSITIONS = [...]
     SLEEP_HEAD_JOINT_POSITIONS = [
         0,
         -0.9848156658225817,

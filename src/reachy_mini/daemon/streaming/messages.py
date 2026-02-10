@@ -19,7 +19,7 @@ from reachy_mini.daemon.models import (
     GotoRequest,
     MotorControlMode,
 )
-from reachy_mini.motion.move_tracker import MoveId, MoveStatus
+from reachy_mini.motion.manager import MoveId, MoveStatus
 
 # =============================================================================
 # Commands (Client → Server)
