@@ -66,7 +66,7 @@ async def restart_daemon(
 
     async def restart(logger: logging.Logger) -> None:
         with busy_lock:
-            await daemon.restart()
+            await daemon.restart_components()
 
     job_id = bg_job_register.run_command("daemon-restart", restart)
     return {"job_id": job_id}

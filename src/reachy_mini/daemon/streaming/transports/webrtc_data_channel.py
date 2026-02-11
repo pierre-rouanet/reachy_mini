@@ -20,7 +20,7 @@ from reachy_mini.daemon.streaming.transport import (
 logger = logging.getLogger(__name__)
 
 
-class DataChannelTransport(StreamingTransport):
+class WebRTCDataChannelTransport(StreamingTransport):
     """Transport for a single WebRTC data channel peer.
 
     This transport wraps the send/receive interface of a GStreamer

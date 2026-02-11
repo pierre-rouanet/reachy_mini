@@ -1,7 +1,7 @@
 """Motor state models.
 
 These models represent the current state of the robot's motors.
-Used by ApiManager and WebRTCManager for state streaming.
+Used by HttpServer and StreamingManager for state streaming.
 """
 
 from enum import Enum

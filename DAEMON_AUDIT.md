@@ -2,7 +2,7 @@
 
 ## Structure & Architecture — Good
 
-The daemon has a clean, well-layered architecture: a `Daemon` orchestrator delegates to managers (`MotorManager`, `ApiManager`, `WebRTCManager`, `AppManager`, `MotionManager`). The `models/` package is shared between HTTP and streaming APIs — single source of truth. The streaming layer is properly transport-agnostic via an ABC. Documentation (docstrings) is thorough.
+The daemon has a clean, well-layered architecture: a `Daemon` orchestrator delegates to managers (`MotorManager`, `HttpServer`, `StreamingManager`, `AppManager`, `MotionManager`). The `models/` package is shared between HTTP and streaming APIs — single source of truth. The streaming layer is properly transport-agnostic via an ABC. Documentation (docstrings) is thorough.
 
 ---
 
@@ -37,7 +37,7 @@ The daemon has a clean, well-layered architecture: a `Daemon` orchestrator deleg
   The STL endpoint doesn't validate that the resolved path stays within `STL_ASSETS_DIR`.
 
 - [x] **9. `Daemon` reaches into `ApiManager` privates**
-  Refactored: `run_forever()` no longer accesses `_uvicorn_server` or `_server_thread`. Uses `api_manager.serve()` (blocking) and `api_manager.request_shutdown()` (sync). Thread replaced with asyncio task.
+  Refactored: `run_forever()` no longer accesses `_uvicorn_server` or `_server_thread`. Uses `http_server.serve()` (blocking) and `http_server.request_shutdown()` (sync). Thread replaced with asyncio task. `ApiManager` renamed to `HttpServer`.
 
 - [x] **10. Router accesses `Daemon` privates**
   Fixed: router uses `daemon.motor_manager` and `daemon.motion_manager` public properties. Router now calls `start_components()`/`stop_components()` instead of `start()`/`stop()`.
@@ -54,7 +54,7 @@ The daemon has a clean, well-layered architecture: a `Daemon` orchestrator deleg
   Removed `convert_enum_to_dict` from utils.py (+ unused `Enum`/`List` imports, + autodoc reference in docs). Removed redundant `assert job is not None` from bg_job_register.py.
 
 - [ ] **14. Unreliable `__del__` methods**
-  `daemon.py:121-123`, `api_manager.py:84-86`, `webrtc_manager.py:63-69`. The last one explicitly calls `self._webrtc.__del__()` — an antipattern.
+  `daemon.py:121-123`, `http_server.py:84-86`, `webrtc_manager.py:63-69`. The last one explicitly calls `self._webrtc.__del__()` — an antipattern.
 
 - [ ] **15. Set mutation inside list comprehension in `wifi_config.py:147`**
   `not seen.add(x.ssid)` with `# type: ignore` — fragile antipattern.
@@ -83,6 +83,6 @@ The daemon has a clean, well-layered architecture: a `Daemon` orchestrator deleg
 
 ## Security Notes
 
-- CORS `allow_origins=["*"]` in `api_manager.py:161-166` — acceptable for local robot but worth noting.
+- CORS `allow_origins=["*"]` in `http_server.py:161-166` — acceptable for local robot but worth noting.
 - Hardcoded WiFi hotspot credentials in `wifi_config.py:11-12`.
 - BLE command execution with minimal PIN auth in `bluetooth_service.py`.

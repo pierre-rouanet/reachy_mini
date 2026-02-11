@@ -1,10 +1,10 @@
-"""WebRTC manager for Reachy Mini daemon.
+"""Streaming manager for Reachy Mini daemon.
 
-This module provides the WebRTCManager class that handles real-time
-streaming via WebRTC (video, audio, and motor data).
+This module provides the StreamingManager class that handles all real-time
+streaming sessions (WebSocket and WebRTC data channels).
 
-Motor data streaming uses the same protocol as WebSocket (StreamingSession +
-ProtocolHandler) but transported over WebRTC data channels for lower latency.
+Both transports use the same protocol: StreamingSession + ProtocolHandler,
+ensuring consistent behavior regardless of transport layer.
 """
 
 import asyncio
@@ -12,47 +12,56 @@ import concurrent.futures
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
-from reachy_mini.daemon.streaming import ProtocolHandler, StreamingSession
-from reachy_mini.daemon.streaming.transports.data_channel import DataChannelTransport
+from reachy_mini.daemon.streaming import (
+    ProtocolHandler,
+    StreamingSession,
+    StreamingTransport,
+)
+from reachy_mini.daemon.streaming.transports.webrtc_data_channel import (
+    WebRTCDataChannelTransport,
+)
 
 if TYPE_CHECKING:
     from reachy_mini.daemon.daemon import Daemon
+    from reachy_mini.media.media_manager import MediaManager
+    from reachy_mini.motion.manager import MotionManager
+    from reachy_mini.motor_controller.abstract import MotorController
 
 
-class WebRTCManager:
-    """Manages WebRTC real-time streaming.
+class StreamingManager:
+    """Manages all real-time streaming sessions.
 
-    Handles WebRTC streaming for video, audio, and motor data.
-    When a WebRTC peer connects, a StreamingSession is created for
-    the peer's data channel, enabling motor state/command streaming
-    using the same protocol as WebSocket.
+    Provides a unified session factory for both WebSocket and WebRTC
+    transports. Also manages WebRTC infrastructure (GStreamer) when enabled.
     """
 
     def __init__(
         self,
         log_level: str = "INFO",
-        enabled: bool = False,
+        webrtc_enabled: bool = False,
     ) -> None:
-        """Initialize the WebRTCManager.
+        """Initialize the StreamingManager.
 
         Args:
             log_level: Logging level.
-            enabled: Whether WebRTC streaming should be enabled.
+            webrtc_enabled: Whether WebRTC streaming should be enabled.
 
         """
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(log_level)
 
         self._log_level = log_level
-        self._enabled = enabled
-        self._webrtc: Optional[Any] = None  # GstWebRTC, imported conditionally
         self._daemon: Optional[Daemon] = None
+        self._motor_controller: Optional[MotorController] = None
+        self._motion_manager: Optional[MotionManager] = None
+        self._audio: Optional[MediaManager] = None
 
-        # Active streaming sessions per peer
-        self._transports: dict[str, DataChannelTransport] = {}
-        self._sessions: dict[str, concurrent.futures.Future[None]] = {}
+        # WebRTC infrastructure
+        self._webrtc: Optional[Any] = None  # GstWebRTC, imported conditionally
+        self._webrtc_transports: dict[str, WebRTCDataChannelTransport] = {}
+        self._webrtc_sessions: dict[str, concurrent.futures.Future[None]] = {}
 
-        if enabled:
+        if webrtc_enabled:
             try:
                 from reachy_mini.media.webrtc_daemon import GstWebRTC
 
@@ -61,26 +70,18 @@ class WebRTCManager:
                 self.logger.error(f"Failed to initialize WebRTC: {e}")
                 self._webrtc = None
 
-    def __del__(self) -> None:
-        """Destructor to ensure proper cleanup."""
-        self.logger.debug("Cleaning up WebRTCManager resources...")
-        if self._webrtc is not None:
-            self._webrtc.stop()
-            self._webrtc.__del__()
-            self._webrtc = None
-
     @property
     def webrtc(self) -> Optional[Any]:
         """Get the underlying GstWebRTC instance."""
         return self._webrtc
 
     @property
-    def is_available(self) -> bool:
+    def is_webrtc_available(self) -> bool:
         """Check if WebRTC is available and initialized."""
         return self._webrtc is not None
 
     def set_daemon(self, daemon: "Daemon") -> None:
-        """Set the daemon reference and wire up data channel handlers.
+        """Set the daemon reference and wire up dependencies.
 
         Must be called after the daemon's motor controller is started,
         so that ProtocolHandler can be created for each peer.
@@ -90,13 +91,46 @@ class WebRTCManager:
 
         """
         self._daemon = daemon
+        self._motor_controller = daemon.motor_controller
+        self._motion_manager = daemon.motion_manager
+        self._audio = daemon.audio
 
         if self._webrtc is not None:
             self._webrtc.set_message_handler(self._on_data_message)
             self._webrtc.set_open_handler(self._on_data_channel_open)
             self._webrtc.set_close_handler(self._on_data_channel_close)
 
-    async def start(self) -> None:
+    def create_session(self, transport: StreamingTransport) -> StreamingSession:
+        """Create a streaming session for any transport type.
+
+        Args:
+            transport: The transport layer (WebSocket or DataChannel).
+
+        Returns:
+            A configured StreamingSession ready to run.
+
+        Raises:
+            RuntimeError: If the daemon is not set or motor controller not ready.
+
+        """
+        if self._daemon is None:
+            raise RuntimeError("Daemon not set, call set_daemon() first")
+
+        motor_controller = self._daemon.motor_controller
+        if motor_controller is None or not motor_controller.ready.is_set():
+            raise RuntimeError("Motor controller not ready")
+
+        handler = ProtocolHandler(
+            motor_controller=motor_controller,
+            motion_manager=self._daemon.motion_manager,
+            audio=self._daemon.audio,
+            daemon=self._daemon,
+        )
+        return StreamingSession(transport, handler)
+
+    # --- WebRTC lifecycle ---
+
+    async def start_webrtc(self) -> None:
         """Start WebRTC streaming."""
         if self._webrtc is not None:
             self.logger.info("Starting WebRTC...")
@@ -104,18 +138,17 @@ class WebRTCManager:
             await asyncio.sleep(0.2)
             self._webrtc.start()
 
-    def pause(self) -> None:
+    def pause_webrtc(self) -> None:
         """Pause WebRTC streaming (keeps signaling server running)."""
         if self._webrtc is not None:
             self._webrtc.pause()
 
-    def stop(self) -> None:
-        """Stop WebRTC streaming."""
-        # Cancel all active sessions
-        for peer_id, task in list(self._sessions.items()):
+    def stop_webrtc(self) -> None:
+        """Stop WebRTC streaming and cancel all active sessions."""
+        for peer_id, task in list(self._webrtc_sessions.items()):
             task.cancel()
-        self._sessions.clear()
-        self._transports.clear()
+        self._webrtc_sessions.clear()
+        self._webrtc_transports.clear()
 
         if self._webrtc is not None:
             self._webrtc.stop()
@@ -147,25 +180,18 @@ class WebRTCManager:
             return
 
         assert self._webrtc is not None  # guaranteed by set_daemon wiring
-        transport = DataChannelTransport(
+        transport = WebRTCDataChannelTransport(
             peer_id=peer_id,
             send_fn=self._webrtc.send_data_message,
             loop=loop,
         )
-        self._transports[peer_id] = transport
+        self._webrtc_transports[peer_id] = transport
 
-        handler = ProtocolHandler(
-            motor_controller=motor_controller,
-            motion_manager=self._daemon.motion_manager,
-            audio=self._daemon.audio,
-            daemon=self._daemon,
-        )
-
-        session = StreamingSession(transport, handler)
+        session = self.create_session(transport)
 
         # Start session on the asyncio event loop
         task = asyncio.run_coroutine_threadsafe(session.run(), loop)
-        self._sessions[peer_id] = task
+        self._webrtc_sessions[peer_id] = task
 
         self.logger.info(f"Streaming session started for WebRTC peer {peer_id}")
 
@@ -174,12 +200,12 @@ class WebRTCManager:
         self.logger.info(f"Data channel closed for peer {peer_id}")
 
         # Notify transport (triggers session cleanup via close callback)
-        transport = self._transports.pop(peer_id, None)
+        transport = self._webrtc_transports.pop(peer_id, None)
         if transport is not None:
             transport.notify_close()
 
         # Clean up session tracking
-        task = self._sessions.pop(peer_id, None)
+        task = self._webrtc_sessions.pop(peer_id, None)
         if task is not None:
             task.cancel()
 
@@ -192,7 +218,7 @@ class WebRTCManager:
 
         Routes the message to the correct transport's receive method.
         """
-        transport = self._transports.get(peer_id)
+        transport = self._webrtc_transports.get(peer_id)
         if transport is not None:
             transport.receive(message)
         else:

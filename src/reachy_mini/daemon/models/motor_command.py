@@ -1,7 +1,7 @@
 """Motor command models.
 
 These models represent commands sent to the robot's motors.
-Used by ApiManager and WebRTCManager for receiving commands.
+Used by HttpServer and StreamingManager for receiving commands.
 """
 
 from pydantic import BaseModel, model_validator

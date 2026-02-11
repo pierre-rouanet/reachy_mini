@@ -34,14 +34,14 @@ from .messages import (
 )
 from .session import StreamingSession
 from .transport import StreamingTransport
-from .transports import DataChannelTransport, WebSocketTransport
+from .transports import WebRTCDataChannelTransport, WebSocketTransport
 
 __all__ = [
     # Core components
     "StreamingTransport",
     "StreamingSession",
     "ProtocolHandler",
-    "DataChannelTransport",
+    "WebRTCDataChannelTransport",
     "WebSocketTransport",
     # Type aliases
     "MoveId",

@@ -1,6 +1,6 @@
 """Transport implementations for streaming protocol."""
 
-from .data_channel import DataChannelTransport
+from .webrtc_data_channel import WebRTCDataChannelTransport
 from .websocket import WebSocketTransport
 
-__all__ = ["DataChannelTransport", "WebSocketTransport"]
+__all__ = ["WebRTCDataChannelTransport", "WebSocketTransport"]

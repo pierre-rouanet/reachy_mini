@@ -1,7 +1,7 @@
 """Shared data models for daemon interfaces.
 
-These models are used by both ApiManager (HTTP/WebSocket) and
-WebRTCManager (data channels) to ensure consistent data formats.
+These models are used by both HttpServer (REST API) and
+StreamingManager (WebSocket/WebRTC) to ensure consistent data formats.
 
 The SDK client also uses these models for communication.
 """

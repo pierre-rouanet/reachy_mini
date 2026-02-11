@@ -1,7 +1,7 @@
-"""API manager for Reachy Mini daemon.
+"""HTTP server for Reachy Mini daemon.
 
-This module provides the ApiManager class that handles
-the FastAPI HTTP server for REST API and WebSocket endpoints.
+This module provides the HttpServer class that manages
+the FastAPI/uvicorn HTTP server for the REST API.
 """
 
 import asyncio
@@ -47,10 +47,10 @@ def is_port_available(host: str, port: int) -> bool:
             return False
 
 
-class ApiManager:
-    """Manages the FastAPI HTTP server.
+class HttpServer:
+    """Manages the FastAPI/uvicorn HTTP server.
 
-    Handles FastAPI HTTP server for REST API and WebSocket endpoints.
+    Handles the HTTP server for the REST API.
     """
 
     def __init__(
@@ -59,7 +59,7 @@ class ApiManager:
         log_level: str = "INFO",
         wireless_version: bool = False,
     ) -> None:
-        """Initialize the ApiManager.
+        """Initialize the HttpServer.
 
         Args:
             daemon: The Daemon instance that owns this manager.
@@ -82,7 +82,7 @@ class ApiManager:
 
     def __del__(self) -> None:
         """Destructor to ensure proper cleanup."""
-        self.logger.debug("Cleaning up ApiManager resources...")
+        self.logger.debug("Cleaning up HttpServer resources...")
 
     @property
     def fastapi_app(self) -> FastAPI | None:

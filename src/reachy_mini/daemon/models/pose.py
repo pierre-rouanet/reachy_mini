@@ -1,7 +1,7 @@
 """Pose representation models.
 
 These models are used to represent 3D poses in different formats.
-Both ApiManager and WebRTCManager use these for motor data.
+Both HttpServer and StreamingManager use these for motor data.
 """
 
 import numpy as np

@@ -13,11 +13,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from reachy_mini.daemon.streaming import (
-    ProtocolHandler,
-    StreamingSession,
-    WebSocketTransport,
-)
+from reachy_mini.daemon.streaming import WebSocketTransport
 
 if TYPE_CHECKING:
     from reachy_mini.daemon.daemon import Daemon
@@ -47,17 +43,8 @@ async def unified_stream(websocket: WebSocket) -> None:
 
     await websocket.accept()
 
-    # Create protocol handler with all dependencies
-    handler = ProtocolHandler(
-        motor_controller=motor_controller,
-        motion_manager=daemon.motion_manager,
-        audio=daemon.audio,
-        daemon=daemon,
-    )
-
-    # Create transport and session
     transport = WebSocketTransport(websocket)
-    session = StreamingSession(transport, handler)
+    session = daemon.streaming_manager.create_session(transport)
 
     try:
         await session.run()
