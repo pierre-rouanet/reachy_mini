@@ -593,7 +593,7 @@ async def test_stream_client() -> None:
         async with StreamClient() as client:
             # Test get_status
             status = await client.get_status()
-            assert status["motor_ready"] is True
+            assert status.motor_ready is True
 
             # Test set_mode
             await client.enable_motors()

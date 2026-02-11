@@ -31,6 +31,7 @@ from .messages import (
     TargetCommand,
     # Utilities
     parse_inbound_message,
+    parse_outbound_message,
 )
 from .session import StreamingSession
 from .transport import StreamingTransport
@@ -70,4 +71,5 @@ __all__ = [
     "OutboundMessage",
     # Utilities
     "parse_inbound_message",
+    "parse_outbound_message",
 ]

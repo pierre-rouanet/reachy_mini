@@ -11,7 +11,6 @@ use the ReachyMini class which wraps StreamClient with a background event loop.
 """
 
 import asyncio
-import json
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any, List, Optional, Union
@@ -32,13 +31,19 @@ from reachy_mini.daemon.models import (
 from reachy_mini.daemon.models.pose import pose_from_numpy
 from reachy_mini.daemon.streaming.messages import (
     CancelCommand,
+    DaemonStatusEvent,
     GetDaemonStatusCommand,
     GetStatusCommand,
     GotoCommand,
+    GotoDoneEvent,
+    OutboundMessage,
     SetAutomaticBodyRotationCommand,
     SetModeCommand,
+    StateEvent,
+    StatusEvent,
     SubscribeCommand,
     TargetCommand,
+    parse_outbound_message,
 )
 from reachy_mini.motion import MoveId, MoveStatus
 from reachy_mini.sdk_client.transport import ClientTransport
@@ -97,7 +102,7 @@ class StreamClient:
         self._transport = transport
 
         self._state_queue: asyncio.Queue[FullState] = asyncio.Queue()
-        self._event_handlers: dict[str, asyncio.Queue[Any]] = {}
+        self._event_handlers: dict[str, asyncio.Queue[OutboundMessage]] = {}
         self._pending_gotos: dict[MoveId, asyncio.Future[MoveStatus]] = {}
 
     @property
@@ -145,38 +150,29 @@ class StreamClient:
     async def _on_message(self, message: str) -> None:
         """Handle incoming message from transport."""
         try:
-            event = json.loads(message)
-            event_type = event.get("event")
+            event = parse_outbound_message(message)
 
-            if event_type == "state":
-                state = FullState.model_validate(event["state"])
+            if isinstance(event, StateEvent):
                 # Non-blocking put, drop old states if queue is full
                 try:
-                    self._state_queue.put_nowait(state)
+                    self._state_queue.put_nowait(event.state)
                 except asyncio.QueueFull:
-                    # Drop oldest and add new
                     try:
                         self._state_queue.get_nowait()
                     except asyncio.QueueEmpty:
                         pass
-                    self._state_queue.put_nowait(state)
+                    self._state_queue.put_nowait(event.state)
 
-            elif event_type == "goto_done":
-                move_id = event.get("id")
-                status = MoveStatus(event["status"])
+            elif isinstance(event, GotoDoneEvent):
                 # Handle async goto completion
-                if move_id and move_id in self._pending_gotos:
-                    self._pending_gotos[move_id].set_result(status)
+                if event.id and event.id in self._pending_gotos:
+                    self._pending_gotos[event.id].set_result(event.status)
                 # Handle blocking goto (put in event handler queue)
                 if "goto_done" in self._event_handlers:
                     await self._event_handlers["goto_done"].put(event)
 
-            elif event_type == "goto_started":
-                # Just acknowledgment for async goto, no action needed
-                pass
-
-            elif event_type in self._event_handlers:
-                await self._event_handlers[event_type].put(event)
+            elif event.event in self._event_handlers:
+                await self._event_handlers[event.event].put(event)
 
         except Exception as e:
             self.logger.warning("Error processing event: %s", e)
@@ -185,39 +181,41 @@ class StreamClient:
         """Handle transport close."""
         self.logger.debug("Transport connection closed")
 
-    async def _wait_for_event(
-        self, event_type: str, timeout: Optional[float] = None
-    ) -> dict[str, Any]:
-        """Wait for a specific event type."""
-        queue: asyncio.Queue[Any] = asyncio.Queue()
-        self._event_handlers[event_type] = queue
+    async def _request(
+        self, cmd: BaseModel, event_type: str, timeout: float = 5.0
+    ) -> OutboundMessage:
+        """Send a command and wait for a specific response event.
+
+        Args:
+            cmd: The command to send.
+            event_type: The event type to wait for.
+            timeout: Maximum time to wait for the response.
+
+        Returns:
+            The parsed event model from the server.
+
+        """
+        self._event_handlers[event_type] = asyncio.Queue()
         try:
-            return await asyncio.wait_for(queue.get(), timeout=timeout)
+            await self._send_cmd(cmd)
+            return await asyncio.wait_for(
+                self._event_handlers[event_type].get(), timeout=timeout
+            )
         finally:
-            del self._event_handlers[event_type]
+            self._event_handlers.pop(event_type, None)
 
     # --- Commands ---
 
-    async def get_status(self) -> dict[str, Any]:
+    async def get_status(self) -> StatusEvent:
         """Get daemon status.
 
         Returns:
-            Status dictionary with motor_ready, control_mode, available_sensors.
+            StatusEvent with motor_ready, control_mode, available_sensors.
 
         """
-        self._event_handlers["status"] = asyncio.Queue()
-        try:
-            await self._send_cmd(GetStatusCommand())
-            event = await asyncio.wait_for(
-                self._event_handlers["status"].get(), timeout=5.0
-            )
-            return {
-                "motor_ready": event["motor_ready"],
-                "control_mode": event.get("control_mode"),
-                "available_sensors": event.get("available_sensors", []),
-            }
-        finally:
-            del self._event_handlers["status"]
+        event = await self._request(GetStatusCommand(), "status")
+        assert isinstance(event, StatusEvent)
+        return event
 
     async def subscribe(
         self,
@@ -242,14 +240,7 @@ class StreamClient:
             mode: The desired motor mode.
 
         """
-        self._event_handlers["mode_changed"] = asyncio.Queue()
-        try:
-            await self._send_cmd(SetModeCommand(mode=mode))
-            await asyncio.wait_for(
-                self._event_handlers["mode_changed"].get(), timeout=5.0
-            )
-        finally:
-            del self._event_handlers["mode_changed"]
+        await self._request(SetModeCommand(mode=mode), "mode_changed")
 
     async def set_target(
         self,
@@ -278,6 +269,25 @@ class StreamClient:
         )
         await self._send_cmd(TargetCommand(target=target))
 
+    @staticmethod
+    def _build_goto_request(
+        head: Optional[npt.NDArray[np.float64]] = None,
+        head_joints: Optional[List[float]] = None,
+        antennas: Optional[Union[npt.NDArray[np.float64], List[float]]] = None,
+        body_rotation: Optional[float] = None,
+        duration: float = 1.0,
+        interpolation: InterpolationTechnique = InterpolationTechnique.MIN_JERK,
+    ) -> GotoRequest:
+        """Build a GotoRequest from the given parameters."""
+        return GotoRequest(
+            head_pose=pose_from_numpy(head) if head is not None else None,
+            head_joints=head_joints if head is None else None,
+            antennas=tuple(antennas) if antennas is not None else None,
+            body_rotation=body_rotation,
+            duration=duration,
+            interpolation=interpolation,
+        )
+
     async def goto(
         self,
         head: Optional[npt.NDArray[np.float64]] = None,
@@ -304,28 +314,14 @@ class StreamClient:
             Final move status.
 
         """
-        request = GotoRequest(
-            head_pose=pose_from_numpy(head) if head is not None else None,
-            head_joints=head_joints if head is None else None,
-            antennas=tuple(antennas) if antennas is not None else None,
-            body_rotation=body_rotation,
-            duration=duration,
-            interpolation=interpolation,
+        request = self._build_goto_request(
+            head, head_joints, antennas, body_rotation, duration, interpolation
         )
-
-        # Register handler for goto_done (blocking mode)
-        self._event_handlers["goto_done"] = asyncio.Queue()
-        try:
-            await self._send_cmd(GotoCommand(request=request))
-
-            # Wait for goto_done event
-            event = await asyncio.wait_for(
-                self._event_handlers["goto_done"].get(),
-                timeout=duration + 10.0,
-            )
-            return MoveStatus(event["status"])
-        finally:
-            self._event_handlers.pop("goto_done", None)
+        event = await self._request(
+            GotoCommand(request=request), "goto_done", timeout=duration + 10.0
+        )
+        assert isinstance(event, GotoDoneEvent)
+        return event.status
 
     async def goto_async(
         self,
@@ -358,13 +354,8 @@ class StreamClient:
         if move_id is None:
             move_id = str(uuid.uuid4())
 
-        request = GotoRequest(
-            head_pose=pose_from_numpy(head) if head is not None else None,
-            head_joints=head_joints if head is None else None,
-            antennas=tuple(antennas) if antennas is not None else None,
-            body_rotation=body_rotation,
-            duration=duration,
-            interpolation=interpolation,
+        request = self._build_goto_request(
+            head, head_joints, antennas, body_rotation, duration, interpolation
         )
 
         # Set up future for completion tracking
@@ -402,13 +393,8 @@ class StreamClient:
             move_id: The move ID to cancel.
 
         """
-        self._event_handlers["cancelled"] = asyncio.Queue()
-        try:
-            await self._send_cmd(CancelCommand(id=move_id))
-            await asyncio.wait_for(self._event_handlers["cancelled"].get(), timeout=5.0)
-        finally:
-            del self._event_handlers["cancelled"]
-            self._pending_gotos.pop(move_id, None)
+        await self._request(CancelCommand(id=move_id), "cancelled")
+        self._pending_gotos.pop(move_id, None)
 
     # --- State Streaming ---
 
@@ -465,15 +451,10 @@ class StreamClient:
             enabled: Whether to enable automatic body rotation.
 
         """
-        self._event_handlers["automatic_body_rotation_changed"] = asyncio.Queue()
-        try:
-            await self._send_cmd(SetAutomaticBodyRotationCommand(enabled=enabled))
-            await asyncio.wait_for(
-                self._event_handlers["automatic_body_rotation_changed"].get(),
-                timeout=5.0,
-            )
-        finally:
-            del self._event_handlers["automatic_body_rotation_changed"]
+        await self._request(
+            SetAutomaticBodyRotationCommand(enabled=enabled),
+            "automatic_body_rotation_changed",
+        )
 
     async def get_automatic_body_rotation(self) -> bool:
         """Get automatic body rotation setting.
@@ -483,23 +464,16 @@ class StreamClient:
 
         """
         status = await self.get_status()
-        return bool(status.get("automatic_body_rotation", False))
+        return bool(status.automatic_body_rotation)
 
-    async def get_daemon_status(self) -> dict[str, Any]:
+    async def get_daemon_status(self) -> DaemonStatusEvent:
         """Get full daemon status.
 
         Returns:
-            Dictionary with full daemon status including state, simulation_enabled,
+            DaemonStatusEvent with state, simulation_enabled,
             error, motor_controller_status, wlan_ip, version, etc.
 
         """
-        self._event_handlers["daemon_status"] = asyncio.Queue()
-        try:
-            await self._send_cmd(GetDaemonStatusCommand())
-            event = await asyncio.wait_for(
-                self._event_handlers["daemon_status"].get(), timeout=5.0
-            )
-            # Remove the 'event' key and return the rest
-            return {k: v for k, v in event.items() if k != "event"}
-        finally:
-            del self._event_handlers["daemon_status"]
+        event = await self._request(GetDaemonStatusCommand(), "daemon_status")
+        assert isinstance(event, DaemonStatusEvent)
+        return event

@@ -15,10 +15,11 @@ from typing import Any, Coroutine, Dict, List, Optional, TypeVar, Union
 import cv2
 import numpy as np
 import numpy.typing as npt
-from asgiref.sync import async_to_sync
+import websockets.exceptions
 from scipy.spatial.transform import Rotation as R
 
 from reachy_mini.daemon.models import MotorControlMode
+from reachy_mini.daemon.streaming.messages import DaemonStatusEvent
 from reachy_mini.daemon.utils import daemon_check, is_local_camera_available
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.move import Move
@@ -101,11 +102,10 @@ class ReachyMini:
         self._loop_thread: Optional[threading.Thread] = None
         self._stream_client: Optional[StreamClient] = None
         self._stop_event = threading.Event()
-        self._daemon_status: Dict[str, Any] = {}  # Set by _initialize_client
+        self._daemon_status: Optional[DaemonStatusEvent] = None  # Set by _initialize_client
 
         self.host, self.port = self._initialize_client(host, port, timeout)
         self.set_automatic_body_rotation(automatic_body_rotation)
-        self._last_head_pose: Optional[npt.NDArray[np.float64]] = None
         self.is_recording = False
 
         self.T_head_cam = np.eye(4)
@@ -175,34 +175,32 @@ class ReachyMini:
             future = asyncio.run_coroutine_threadsafe(coro, self._loop)
             return future.result(timeout=10.0)
         except ConnectionError:
-            # Re-raise ConnectionError as "Lost connection" error
             raise ConnectionError("Lost connection with the server.")
-        except Exception as e:
-            # Check if it's a connection-related error by type or message
-            error_type = type(e).__name__.lower()
-            error_str = str(e).lower()
-            if any(x in error_type for x in ["connection", "websocket", "closed"]):
-                raise ConnectionError("Lost connection with the server.") from e
-            if any(
-                x in error_str
-                for x in ["connection", "closed", "disconnect", "service restart"]
-            ):
-                raise ConnectionError("Lost connection with the server.") from e
-            raise
+        except (OSError, websockets.exceptions.ConnectionClosed) as e:
+            raise ConnectionError("Lost connection with the server.") from e
+
+    @property
+    def _client(self) -> StreamClient:
+        """Get the stream client, raising if not connected."""
+        if self._stream_client is None:
+            raise ConnectionError("Not connected to daemon")
+        return self._stream_client
 
     @property
     def media(self) -> MediaManager:
         """Expose the MediaManager instance used by ReachyMini."""
         return self.media_manager
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> DaemonStatusEvent:
         """Get daemon status.
 
         Returns:
-            Dictionary with daemon status including state, simulation_enabled,
+            DaemonStatusEvent with state, simulation_enabled,
             error, motor_controller_status, wlan_ip, etc.
 
         """
+        if self._daemon_status is None:
+            raise RuntimeError("Daemon status not available (not connected)")
         return self._daemon_status
 
     @property
@@ -230,7 +228,7 @@ class ReachyMini:
             >>>     temp = imu_data['temperature']
 
         """
-        state = self._run_async(self._stream_client.get_state())  # type: ignore
+        state = self._run_async(self._client.get_state())
         if state.sensors and "imu" in state.sensors:
             imu = state.sensors["imu"]
             return {
@@ -244,7 +242,8 @@ class ReachyMini:
     def _configure_mediamanager(
         self, media_backend: str, log_level: str
     ) -> MediaManager:
-        is_wireless = self._daemon_status.get("wireless_version", False)
+        status = self.get_status()
+        is_wireless = status.wireless_version
 
         # If no_media is requested, skip all media initialization
         if media_backend.lower() == "no_media":
@@ -289,16 +288,17 @@ class ReachyMini:
                     )
 
         return MediaManager(
-            use_sim=bool(self._daemon_status.get("simulation_enabled", False)),
+            use_sim=bool(status.simulation_enabled),
             backend=mbackend,
             log_level=log_level,
-            signalling_host=self._daemon_status.get("wlan_ip") or "localhost",
+            signalling_host=status.wlan_ip or "localhost",
         )
 
-    def _start_event_loop(self) -> None:
+    def _start_event_loop(self, ready: threading.Event) -> None:
         """Start background event loop in a thread."""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        ready.set()
         self._loop.run_forever()
 
     def _initialize_client(
@@ -306,12 +306,10 @@ class ReachyMini:
     ) -> tuple[str, int]:
         """Create and connect a StreamClient, with auto-discovery if host is None."""
         # Start background event loop
-        self._loop_thread = threading.Thread(target=self._start_event_loop, daemon=True)
+        loop_ready = threading.Event()
+        self._loop_thread = threading.Thread(target=self._start_event_loop, args=(loop_ready,), daemon=True)
         self._loop_thread.start()
-
-        # Wait for loop to start
-        while self._loop is None:
-            time.sleep(0.01)
+        loop_ready.wait()
 
         hosts_to_try = (
             [host] if host is not None else ["localhost", "reachy-mini.local"]
@@ -336,12 +334,7 @@ class ReachyMini:
                 status_future = asyncio.run_coroutine_threadsafe(
                     client.get_daemon_status(), self._loop
                 )
-                status_result = status_future.result(timeout=5.0)
-                if not status_result or "state" not in status_result:
-                    raise ConnectionError(
-                        f"Failed to get daemon status from {try_host}:{port}"
-                    )
-                self._daemon_status = status_result
+                self._daemon_status = status_future.result(timeout=5.0)
 
                 self._stream_client = client
                 self.logger.info("Connected to daemon at %s:%d", try_host, port)
@@ -409,8 +402,6 @@ class ReachyMini:
         if body_rotation is not None:
             self.set_target_body_rotation(body_rotation)
 
-        self._last_head_pose = head
-
     def goto_target(
         self,
         head: Optional[npt.NDArray[np.float64]] = None,  # 4x4 pose matrix
@@ -446,7 +437,7 @@ class ReachyMini:
 
         # Use StreamClient's blocking goto
         self._run_async(
-            self._stream_client.goto(  # type: ignore
+            self._client.goto(
                 head=head,
                 antennas=antennas,
                 body_rotation=body_rotation,
@@ -499,7 +490,6 @@ class ReachyMini:
             SLEEP_HEAD_POSE, antennas=SLEEP_ANTENNAS_JOINT_POSITIONS, duration=2
         )
 
-        self._last_head_pose = SLEEP_HEAD_POSE
         time.sleep(2)
 
     def look_at_image(
@@ -526,12 +516,10 @@ class ReachyMini:
             raise RuntimeError("Camera is not initialized.")
 
         # TODO this is false for the raspicam for now
-        assert 0 < u < self.media_manager.camera.resolution[0], (
-            f"u must be in [0, {self.media_manager.camera.resolution[0]}], got {u}."
-        )
-        assert 0 < v < self.media_manager.camera.resolution[1], (
-            f"v must be in [0, {self.media_manager.camera.resolution[1]}], got {v}."
-        )
+        if not (0 < u < self.media_manager.camera.resolution[0]):
+            raise ValueError(f"u must be in [0, {self.media_manager.camera.resolution[0]}], got {u}.")
+        if not (0 < v < self.media_manager.camera.resolution[1]):
+            raise ValueError(f"v must be in [0, {self.media_manager.camera.resolution[1]}], got {v}.")
 
         if duration < 0:
             raise ValueError("Duration can't be negative.")
@@ -653,10 +641,13 @@ class ReachyMini:
             Body rotation is accessed separately via get_current_body_rotation().
 
         """
-        s = self._run_async(self._stream_client.get_state())  # type: ignore
-        assert s is not None, "Could not get current joint positions from the daemon."
-        assert s.head_joints is not None, "Head joints data is None."
-        assert s.antennas is not None, "Antennas data is None."
+        s = self._run_async(self._client.get_state())
+        if s is None:
+            raise RuntimeError("Could not get current joint positions from the daemon.")
+        if s.head_joints is None:
+            raise RuntimeError("Head joints data is None.")
+        if s.antennas is None:
+            raise RuntimeError("Antennas data is None.")
         return s.head_joints, list(s.antennas)
 
     def get_present_antenna_joint_positions(self) -> list[float]:
@@ -675,24 +666,26 @@ class ReachyMini:
             float: Body rotation angle in radians.
 
         """
-        state = self._run_async(self._stream_client.get_state())  # type: ignore
-        assert state is not None, "Could not get state from daemon."
-        assert state.body_rotation is not None, "Body rotation data is None."
+        state = self._run_async(self._client.get_state())
+        if state is None:
+            raise RuntimeError("Could not get state from daemon.")
+        if state.body_rotation is None:
+            raise RuntimeError("Body rotation data is None.")
         return float(state.body_rotation)
 
     def get_current_head_pose(self) -> npt.NDArray[np.float64]:
         """Get the current head pose as a 4x4 matrix.
 
-        Get the current head pose as a 4x4 matrix.
-
         Returns:
             np.ndarray: A 4x4 matrix representing the current head pose.
 
         """
-        state = self._run_async(self._stream_client.get_state())  # type: ignore
-        assert state is not None, "Could not get current head pose from the daemon."
+        state = self._run_async(self._client.get_state())
+        if state is None:
+            raise RuntimeError("Could not get current head pose from the daemon.")
         head_pose = state.head_pose
-        assert head_pose is not None, "Head pose data is None."
+        if head_pose is None:
+            raise RuntimeError("Head pose data is None.")
         result: npt.NDArray[np.float64] = head_pose.to_numpy()
         return result
 
@@ -708,19 +701,19 @@ class ReachyMini:
         """
         if pose is None:
             raise ValueError("Pose must be provided as a 4x4 matrix.")
-        assert pose.shape == (4, 4), (
-            f"Head pose should be a 4x4 matrix, got {pose.shape}."
-        )
+        if pose.shape != (4, 4):
+            raise ValueError(f"Head pose should be a 4x4 matrix, got {pose.shape}.")
 
         self._run_async(
-            self._stream_client.set_target(head=pose)  # type: ignore
+            self._client.set_target(head=pose)
         )
 
     def set_target_antenna_joint_positions(self, antennas: List[float]) -> None:
         """Set the target joint positions of the antennas."""
-        assert len(antennas) == 2, "Antennas must have length 2."
+        if len(antennas) != 2:
+            raise ValueError("Antennas must have length 2.")
         self._run_async(
-            self._stream_client.set_target(antennas=antennas)  # type: ignore
+            self._client.set_target(antennas=antennas)
         )
 
     def set_target_body_rotation(self, body_rotation: float) -> None:
@@ -731,7 +724,7 @@ class ReachyMini:
 
         """
         self._run_async(
-            self._stream_client.set_target(body_rotation=body_rotation)  # type: ignore
+            self._client.set_target(body_rotation=body_rotation)
         )
 
     def set_target_head_joints(self, head_joints: List[float]) -> None:
@@ -752,7 +745,7 @@ class ReachyMini:
                 f"head_joints must have 6 elements, got {len(head_joints)}"
             )
         self._run_async(
-            self._stream_client.set_target(head_joints=head_joints)  # type: ignore
+            self._client.set_target(head_joints=head_joints)
         )
 
     def get_current_head_joints(self) -> List[float]:
@@ -822,17 +815,17 @@ class ReachyMini:
                 "Motor IDs parameter not yet supported via API, ignoring."
             )
         mode = MotorControlMode.Enabled if on else MotorControlMode.Disabled
-        self._run_async(self._stream_client.set_mode(mode))  # type: ignore
+        self._run_async(self._client.set_mode(mode))
 
     def enable_gravity_compensation(self) -> None:
         """Enable gravity compensation for the head motors."""
         self._run_async(
-            self._stream_client.set_mode(MotorControlMode.GravityCompensation)  # type: ignore[union-attr]
+            self._client.set_mode(MotorControlMode.GravityCompensation)
         )
 
     def disable_gravity_compensation(self) -> None:
         """Disable gravity compensation for the head motors."""
-        self._run_async(self._stream_client.set_mode(MotorControlMode.Enabled))  # type: ignore
+        self._run_async(self._client.set_mode(MotorControlMode.Enabled))
 
     def set_automatic_body_rotation(self, enabled: bool) -> None:
         """Set the automatic body rotation.
@@ -844,9 +837,9 @@ class ReachyMini:
             enabled (bool): Whether to enable automatic body rotation.
 
         """
-        self._run_async(self._stream_client.set_automatic_body_rotation(enabled))  # type: ignore
+        self._run_async(self._client.set_automatic_body_rotation(enabled))
 
-    async def async_play_move(
+    def play_move(
         self,
         move: Move,
         play_frequency: float = 100.0,
@@ -891,9 +884,6 @@ class ReachyMini:
                 self.set_target_antenna_joint_positions(list(antennas))
 
             elapsed = time.time() - t0 - t
-            if elapsed < sleep_period:
-                await asyncio.sleep(sleep_period - elapsed)
-            else:
-                await asyncio.sleep(0.001)
-
-    play_move = async_to_sync(async_play_move)
+            remaining = sleep_period - elapsed
+            if remaining > 0:
+                time.sleep(remaining)

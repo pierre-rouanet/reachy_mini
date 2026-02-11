@@ -143,18 +143,20 @@ async def test_daemon_client_disconnection() -> None:
         def sync_client() -> None:
             with ReachyMini(media_backend="no_media") as mini:
                 status = mini.get_status()
-                assert status['state'] == "running"
-                assert status['simulation_enabled']
-                assert status['error'] is None
-                assert status['motor_controller_status']['motor_control_mode'] == "enabled"
-                assert status['motor_controller_status']['error'] is None
-                assert status['wlan_ip'] is None
+                assert status.state == "running"
+                assert status.simulation_enabled
+                assert status.error is None
+                assert status.motor_controller_status['motor_control_mode'] == "enabled"
+                assert status.motor_controller_status['error'] is None
+                assert status.wlan_ip is None
                 client_connected.set()
 
         # Run sync client in a thread to avoid blocking the event loop
         # (uvicorn needs the loop to accept WebSocket connections)
         client_task = asyncio.get_event_loop().run_in_executor(None, sync_client)
-        await asyncio.to_thread(client_connected.wait)
+        if not await asyncio.to_thread(client_connected.wait, timeout=10):
+            await client_task  # Surfaces the thread exception instead of hanging
+            raise AssertionError("sync_client did not signal ready within 10s")
         await daemon.stop()
         await client_task
 
@@ -174,7 +176,9 @@ async def test_daemon_early_stop() -> None:
                     reachy.set_target(head=np.eye(4))
 
         client_task = asyncio.get_event_loop().run_in_executor(None, sync_client)
-        await asyncio.to_thread(client_connected.wait)
+        if not await asyncio.to_thread(client_connected.wait, timeout=10):
+            await client_task
+            raise AssertionError("sync_client did not signal ready within 10s")
         await daemon.stop()
         daemon_stopped.set()
         await client_task
@@ -200,7 +204,9 @@ async def test_daemon_early_stop_get_state() -> None:
                     reachy.get_current_head_pose()
 
         client_task = asyncio.get_event_loop().run_in_executor(None, sync_client)
-        await asyncio.to_thread(client_connected.wait)
+        if not await asyncio.to_thread(client_connected.wait, timeout=10):
+            await client_task
+            raise AssertionError("sync_client did not signal ready within 10s")
         await daemon.stop()
         daemon_stopped.set()
         await client_task

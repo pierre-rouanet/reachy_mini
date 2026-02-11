@@ -233,3 +233,11 @@ OutboundMessage = (
     | AutomaticBodyRotationChangedEvent
     | DaemonStatusEvent
 )
+
+# Type adapter for parsing outbound messages
+_outbound_adapter: TypeAdapter[OutboundMessage] = TypeAdapter(OutboundMessage)
+
+
+def parse_outbound_message(data: str | bytes) -> OutboundMessage:
+    """Parse and validate an outbound message from JSON."""
+    return _outbound_adapter.validate_json(data)
