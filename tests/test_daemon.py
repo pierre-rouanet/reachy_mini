@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from unittest.mock import patch
 
 import aiohttp
@@ -137,9 +138,9 @@ async def test_daemon_multiple_start_stop() -> None:
 async def test_daemon_client_disconnection() -> None:
     config = DaemonArgs(sim=True, headless=True, wake_up_on_start=True, use_audio=False, goto_sleep_on_stop=False)
     async with Daemon(config) as daemon:
-        client_connected = asyncio.Event()
+        client_connected = threading.Event()
 
-        async def simple_client() -> None:
+        def sync_client() -> None:
             with ReachyMini(media_backend="no_media") as mini:
                 status = mini.get_status()
                 assert status['state'] == "running"
@@ -150,60 +151,59 @@ async def test_daemon_client_disconnection() -> None:
                 assert status['wlan_ip'] is None
                 client_connected.set()
 
-        async def wait_for_client() -> None:
-            await client_connected.wait()
-            await daemon.stop()
-
-        await asyncio.gather(simple_client(), wait_for_client())
+        # Run sync client in a thread to avoid blocking the event loop
+        # (uvicorn needs the loop to accept WebSocket connections)
+        client_task = asyncio.get_event_loop().run_in_executor(None, sync_client)
+        await asyncio.to_thread(client_connected.wait)
+        await daemon.stop()
+        await client_task
 
 
 @pytest.mark.asyncio
 async def test_daemon_early_stop() -> None:
     async with Daemon(_TEST_CONFIG) as daemon:
-        client_connected = asyncio.Event()
-        daemon_stopped = asyncio.Event()
+        client_connected = threading.Event()
+        daemon_stopped = threading.Event()
 
-        async def client_bg() -> None:
+        def sync_client() -> None:
             with ReachyMini(media_backend="no_media") as reachy:
                 client_connected.set()
-                await daemon_stopped.wait()
+                daemon_stopped.wait()
 
                 with pytest.raises(ConnectionError, match="Lost connection with the server."):
                     reachy.set_target(head=np.eye(4))
 
-        async def will_stop_soon() -> None:
-            await client_connected.wait()
-            await daemon.stop()
-            daemon_stopped.set()
-
-        await asyncio.gather(client_bg(), will_stop_soon())
+        client_task = asyncio.get_event_loop().run_in_executor(None, sync_client)
+        await asyncio.to_thread(client_connected.wait)
+        await daemon.stop()
+        daemon_stopped.set()
+        await client_task
 
 
 @pytest.mark.asyncio
 async def test_daemon_early_stop_get_state() -> None:
     """Test that getting state also fails when daemon stops."""
     async with Daemon(_TEST_CONFIG) as daemon:
-        client_connected = asyncio.Event()
-        daemon_stopped = asyncio.Event()
+        client_connected = threading.Event()
+        daemon_stopped = threading.Event()
 
-        async def client_bg() -> None:
+        def sync_client() -> None:
             with ReachyMini(media_backend="no_media") as reachy:
                 # Verify we can get head pose while connected
                 pose = reachy.get_current_head_pose()
                 assert pose is not None
 
                 client_connected.set()
-                await daemon_stopped.wait()
+                daemon_stopped.wait()
 
                 with pytest.raises(ConnectionError, match="Lost connection with the server."):
                     reachy.get_current_head_pose()
 
-        async def will_stop_soon() -> None:
-            await client_connected.wait()
-            await daemon.stop()
-            daemon_stopped.set()
-
-        await asyncio.gather(client_bg(), will_stop_soon())
+        client_task = asyncio.get_event_loop().run_in_executor(None, sync_client)
+        await asyncio.to_thread(client_connected.wait)
+        await daemon.stop()
+        daemon_stopped.set()
+        await client_task
 
 
 @pytest.mark.asyncio

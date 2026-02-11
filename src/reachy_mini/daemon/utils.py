@@ -4,8 +4,7 @@ import os
 import struct
 import subprocess
 import time
-from enum import Enum
-from typing import Any, List
+from typing import Any
 
 import psutil
 import serial.tools.list_ports
@@ -59,7 +58,7 @@ def daemon_check(spawn_daemon: bool, use_sim: bool) -> None:
     ) -> tuple[bool, int | None, bool | None]:
         """Check if a specific Python script is running."""
         found_script = False
-        simluation_enabled = False
+        simulation_enabled = False
         for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
                 safe_cmdline = proc.info.get("cmdline") or []
@@ -67,9 +66,9 @@ def daemon_check(spawn_daemon: bool, use_sim: bool) -> None:
                     if script_name in cmd:
                         found_script = True
                     if "--sim" in cmd:
-                        simluation_enabled = True
+                        simulation_enabled = True
                 if found_script:
-                    return True, proc.pid, simluation_enabled
+                    return True, proc.pid, simulation_enabled
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
         return False, None, None
@@ -159,14 +158,3 @@ def get_ip_address(ifname: str = "wlan0") -> str | None:
     else:
         print(f"Platform {platform.system()} not supported for get_ip_address.")
         return None
-
-
-def convert_enum_to_dict(data: List[Any]) -> dict[str, Any]:
-    """Convert a dataclass containing Enums to a dictionary with enum values."""
-
-    def convert_value(obj: Any) -> Any:
-        if isinstance(obj, Enum):
-            return obj.value
-        return obj
-
-    return dict((k, convert_value(v)) for k, v in data)

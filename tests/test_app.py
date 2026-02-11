@@ -28,9 +28,14 @@ async def test_app() -> None:
     async with Daemon(_TEST_CONFIG):
         stop = Event()
 
-        with ReachyMini(media_backend="no_media") as mini:
-            app = MockApp()
-            app.run(mini, stop)
+        # Run sync ReachyMini client in a thread to avoid blocking the event loop
+        # (uvicorn needs the loop to accept WebSocket connections)
+        def sync_client() -> None:
+            with ReachyMini(media_backend="no_media") as mini:
+                app = MockApp()
+                app.run(mini, stop)
+
+        await asyncio.to_thread(sync_client)
 
 
 @pytest.mark.asyncio

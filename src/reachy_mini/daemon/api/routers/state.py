@@ -7,12 +7,10 @@ This exposes:
 For real-time streaming, use the unified WebSocket endpoint at /api/stream/ws.
 """
 
-import time
-from typing import Any
-
 from fastapi import APIRouter, Depends
 
 from reachy_mini.daemon.models import AnyPose, DoAData, FullState, pose_from_numpy
+from reachy_mini.daemon.state_builder import build_state
 from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.motor_controller.abstract import MotorController
 
@@ -97,58 +95,24 @@ async def get_full_state(
         sensors: Comma-separated sensor types (e.g., "doa,imu") or "all" for all available.
 
     """
-    result: dict[str, Any] = {}
+    field_map = {
+        "control_mode": with_control_mode,
+        "head_pose": with_head_pose,
+        "target_head_pose": with_target_head_pose,
+        "head_joints": with_head_joints,
+        "target_head_joints": with_target_head_joints,
+        "body_rotation": with_body_rotation,
+        "target_body_rotation": with_target_body_rotation,
+        "antennas": with_antennas,
+        "target_antennas": with_target_antennas,
+        "passive_joints": with_passive_joints,
+    }
+    fields = [name for name, include in field_map.items() if include]
 
-    if with_control_mode:
-        result["control_mode"] = motor_controller.get_motor_control_mode().value
-
-    if with_head_pose:
-        pose = motor_controller.get_present_head_pose()
-        result["head_pose"] = pose_from_numpy(pose, use_pose_matrix)
-    if with_target_head_pose:
-        target_pose = motor_controller.target_head_pose
-        assert target_pose is not None
-        result["target_head_pose"] = pose_from_numpy(target_pose, use_pose_matrix)
-    if with_head_joints:
-        # Return only the 6 stewart platform joints (exclude body_rotation which is index 0)
-        head_joints = motor_controller.get_present_head_joint_positions()
-        result["head_joints"] = list(head_joints[1:])
-    if with_target_head_joints:
-        target = motor_controller.target_head_joint_positions
-        if target is not None:
-            result["target_head_joints"] = list(target[1:])
-    if with_body_rotation:
-        result["body_rotation"] = motor_controller.get_present_body_yaw()
-    if with_target_body_rotation:
-        result["target_body_rotation"] = motor_controller.target_body_yaw
-    if with_antennas:
-        pos = motor_controller.get_present_antenna_joint_positions()
-        result["antennas"] = (pos[0], pos[1])
-    if with_target_antennas:
-        target = motor_controller.target_antenna_joint_positions
-        if target is not None:
-            result["target_antennas"] = (target[0], target[1])
-
-    if with_passive_joints:
-        joints = motor_controller.get_present_passive_joint_positions()
-        if joints is not None:
-            result["passive_joints"] = list(joints.values())
-        else:
-            result["passive_joints"] = None
-
-    # Handle sensors
-    result["sensors"] = {}
+    sensor_list: list[str] | None = None
     if sensors:
-        requested_sensors = sensors.split(",") if sensors != "all" else ["doa"]  # TODO: get from registry
+        sensor_list = sensors.split(",") if sensors != "all" else ["doa"]  # TODO: get from registry
 
-        if "doa" in requested_sensors and audio:
-            doa_result = audio.get_DoA()
-            if doa_result:
-                result["sensors"]["doa"] = DoAData(angle=doa_result[0], speech_detected=doa_result[1])
-
-        # TODO: Add IMU and other sensors via sensor registry
-
-    result["timestamp"] = time.time()
-    return FullState.model_validate(result)
+    return build_state(motor_controller, audio, fields, sensor_list, use_pose_matrix)
 
 

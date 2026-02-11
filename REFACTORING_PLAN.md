@@ -316,7 +316,7 @@ async with Daemon(DaemonArgs(sim=True, headless=True)) as daemon:
 
 **Signal handling improvements:**
 - Single Ctrl-C cleanly shuts down the daemon
-- Proper SIGINT/SIGTERM handlers in `run4ever()`
+- Proper SIGINT/SIGTERM handlers in `run_forever()`
 - Robot properly goes to sleep on shutdown
 
 ### Step 9: Clean Up Component Dependencies (DONE)

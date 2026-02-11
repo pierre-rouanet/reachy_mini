@@ -8,6 +8,7 @@ ProtocolHandler) but transported over WebRTC data channels for lower latency.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -49,7 +50,7 @@ class WebRTCManager:
 
         # Active streaming sessions per peer
         self._transports: dict[str, DataChannelTransport] = {}
-        self._sessions: dict[str, asyncio.Task[None]] = {}
+        self._sessions: dict[str, concurrent.futures.Future[None]] = {}
 
         if enabled:
             try:
@@ -164,7 +165,7 @@ class WebRTCManager:
 
         # Start session on the asyncio event loop
         task = asyncio.run_coroutine_threadsafe(session.run(), loop)
-        self._sessions[peer_id] = task  # type: ignore[assignment]
+        self._sessions[peer_id] = task
 
         self.logger.info(f"Streaming session started for WebRTC peer {peer_id}")
 

@@ -12,6 +12,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Coroutine
 
+from reachy_mini.daemon.state_builder import build_state
 from reachy_mini.daemon.streaming.messages import (
     ErrorEvent,
     GotoDoneEvent,
@@ -216,7 +217,9 @@ class StreamingSession:
 
         while not self._state_stop_event.is_set():
             try:
-                state = await self._handler.build_state(
+                state = build_state(
+                    self._handler.motor_controller,
+                    self._handler.audio,
                     self._subscribe_config.fields,
                     self._subscribe_config.sensors,
                 )

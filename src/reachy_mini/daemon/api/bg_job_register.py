@@ -108,8 +108,6 @@ async def ws_poll_info(websocket: WebSocket, job_uuid: str) -> None:
         await websocket.close()
         return
 
-    assert job is not None
-
     ws_uuid = str(uuid.uuid4())
     last_log_len = 0
 

@@ -8,12 +8,9 @@ and WebRTC data channels.
 from __future__ import annotations
 
 import logging
-import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
-
-from reachy_mini.daemon.models import FullState, pose_from_numpy
 from reachy_mini.daemon.streaming.messages import (
     AutomaticBodyRotationChangedEvent,
     CancelCommand,
@@ -252,92 +249,3 @@ class ProtocolHandler:
         """Handle get_daemon_status command."""
         status = self._daemon.status()
         await session.send_event(DaemonStatusEvent(**status.model_dump()))
-
-    async def build_state(
-        self,
-        fields: list[str] | None,
-        sensors: list[str] | None,
-        use_pose_matrix: bool = False,
-    ) -> FullState:
-        """Build a FullState object based on requested fields and sensors.
-
-        Args:
-            fields: List of fields to include, or None for all.
-            sensors: List of sensor types to include.
-            use_pose_matrix: Whether to use matrix format for poses.
-
-        Returns:
-            FullState with requested data.
-
-        """
-        mc = self._motor_controller
-        include_all = fields is None
-
-        result: dict[str, Any] = {}
-
-        if include_all or "control_mode" in fields:  # type: ignore[operator]
-            result["control_mode"] = mc.get_motor_control_mode().value
-
-        if include_all or "head_pose" in fields:  # type: ignore[operator]
-            pose = mc.get_present_head_pose()
-            result["head_pose"] = pose_from_numpy(pose, use_pose_matrix)
-
-        if include_all or "target_head_pose" in fields:  # type: ignore[operator]
-            target_pose = mc.target_head_pose
-            if target_pose is not None:
-                result["target_head_pose"] = pose_from_numpy(
-                    target_pose, use_pose_matrix
-                )
-
-        if include_all or "head_joints" in fields:  # type: ignore[operator]
-            head_joints = mc.get_present_head_joint_positions()
-            result["head_joints"] = list(
-                head_joints[1:]
-            )  # Exclude body_rotation at index 0
-
-        if include_all or "target_head_joints" in fields:  # type: ignore[operator]
-            target = mc.target_head_joint_positions
-            if target is not None:
-                result["target_head_joints"] = list(target[1:])
-
-        if include_all or "body_rotation" in fields:  # type: ignore[operator]
-            result["body_rotation"] = mc.get_present_body_yaw()
-
-        if include_all or "target_body_rotation" in fields:  # type: ignore[operator]
-            result["target_body_rotation"] = mc.target_body_yaw
-
-        if include_all or "antennas" in fields:  # type: ignore[operator]
-            pos = mc.get_present_antenna_joint_positions()
-            result["antennas"] = (pos[0], pos[1])
-
-        if include_all or "target_antennas" in fields:  # type: ignore[operator]
-            target = mc.target_antenna_joint_positions
-            if target is not None:
-                result["target_antennas"] = (target[0], target[1])
-
-        # Handle sensors
-        result["sensors"] = {}
-        if sensors:
-            if "doa" in sensors and self._audio:
-                doa_result = self._audio.get_DoA()
-                if doa_result:
-                    from reachy_mini.daemon.models import DoAData
-
-                    result["sensors"]["doa"] = DoAData(
-                        angle=doa_result[0], speech_detected=doa_result[1]
-                    )
-
-            if "imu" in sensors:
-                imu_data = mc.get_imu_data() if hasattr(mc, "get_imu_data") else None
-                if imu_data:
-                    from reachy_mini.daemon.models import IMUData
-
-                    result["sensors"]["imu"] = IMUData(
-                        accelerometer=tuple(imu_data["accelerometer"]),
-                        gyroscope=tuple(imu_data["gyroscope"]),
-                        quaternion=tuple(imu_data["quaternion"]),
-                        temperature=imu_data.get("temperature"),
-                    )
-
-        result["timestamp"] = time.time()
-        return FullState.model_validate(result)

@@ -63,10 +63,10 @@ class HttpOnlyClient:
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
 
-        self._http_client = httpx.Client(base_url=self.base_url, timeout=timeout)
+        self._http_client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
         self._is_connected = False
 
-    def connect(self, timeout: float = 5.0) -> None:
+    async def connect(self, timeout: float = 5.0) -> None:
         """Connect to the daemon.
 
         Verifies the daemon is reachable by fetching initial state.
@@ -80,7 +80,7 @@ class HttpOnlyClient:
         """
         try:
             # Verify daemon is reachable
-            response = self._http_client.get(
+            response = await self._http_client.get(
                 "/api/state/full",
                 params={"with_head_joints": "true"},
                 timeout=timeout,
@@ -91,16 +91,16 @@ class HttpOnlyClient:
         except Exception as e:
             raise ConnectionError(f"Failed to connect to daemon: {e}") from e
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
         """Disconnect from the daemon."""
         self._is_connected = False
-        self._http_client.close()
+        await self._http_client.aclose()
 
     def is_connected(self) -> bool:
         """Check if connected to the daemon."""
         return self._is_connected
 
-    def get_state(
+    async def get_state(
         self,
         with_head_joints: bool = True,
         with_target_head_pose: bool = False,
@@ -130,22 +130,22 @@ class HttpOnlyClient:
         if with_sensors:
             params["sensors"] = with_sensors
 
-        response = self._http_client.get("/api/state/full", params=params)
+        response = await self._http_client.get("/api/state/full", params=params)
         response.raise_for_status()
         return FullState.model_validate(response.json())
 
-    def get_status(self) -> dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         """Get the daemon status.
 
         Returns:
             Dictionary containing daemon status information.
 
         """
-        response = self._http_client.get("/api/daemon/status")
+        response = await self._http_client.get("/api/daemon/status")
         response.raise_for_status()
         return cast(dict[str, Any], response.json())
 
-    def set_target(
+    async def set_target(
         self,
         head: Optional[npt.NDArray[np.float64]] = None,
         antennas: Optional[Union[npt.NDArray[np.float64], List[float]]] = None,
@@ -168,14 +168,14 @@ class HttpOnlyClient:
             body_rotation=body_rotation,
         )
 
-        response = self._http_client.post(
+        response = await self._http_client.post(
             "/api/move/set_target",
             content=target.model_dump_json(exclude_none=True),
             headers={"Content-Type": "application/json"},
         )
         response.raise_for_status()
 
-    def goto(
+    async def goto(
         self,
         head: Optional[npt.NDArray[np.float64]] = None,
         antennas: Optional[Union[npt.NDArray[np.float64], List[float]]] = None,
@@ -214,7 +214,7 @@ class HttpOnlyClient:
             interpolation=interpolation,
         )
 
-        response = self._http_client.post(
+        response = await self._http_client.post(
             "/api/move/goto",
             content=req.model_dump_json(exclude_none=True),
             headers={"Content-Type": "application/json"},
@@ -223,11 +223,11 @@ class HttpOnlyClient:
         move_id = response.json()["id"]
 
         if wait:
-            self.wait_for_move_completion(move_id, timeout or (duration + 5.0))
+            await self.wait_for_move_completion(move_id, timeout or (duration + 5.0))
 
         return move_id
 
-    def get_move_status(self, move_id: MoveId) -> MoveStatus:
+    async def get_move_status(self, move_id: MoveId) -> MoveStatus:
         """Get the status of a movement.
 
         Args:
@@ -237,11 +237,11 @@ class HttpOnlyClient:
             Current status of the movement.
 
         """
-        response = self._http_client.get(f"/api/move/goto/{move_id}")
+        response = await self._http_client.get(f"/api/move/goto/{move_id}")
         response.raise_for_status()
         return MoveStatus(response.json()["status"])
 
-    def wait_for_move_completion(
+    async def wait_for_move_completion(
         self,
         move_id: MoveId,
         timeout: float,
@@ -263,14 +263,14 @@ class HttpOnlyClient:
         """
         start_time = time.time()
         while time.time() - start_time < timeout:
-            status = self.get_move_status(move_id)
+            status = await self.get_move_status(move_id)
             if status in (MoveStatus.Completed, MoveStatus.Failed, MoveStatus.Cancelled):
                 return status
-            time.sleep(poll_interval)
+            await asyncio.sleep(poll_interval)
 
         raise TimeoutError(f"Timeout waiting for move {move_id} to complete.")
 
-    def cancel_move(self, move_id: MoveId) -> MoveStatus:
+    async def cancel_move(self, move_id: MoveId) -> MoveStatus:
         """Cancel a running movement.
 
         Args:
@@ -280,57 +280,57 @@ class HttpOnlyClient:
             Status after cancellation.
 
         """
-        response = self._http_client.post(f"/api/move/goto/{move_id}/cancel")
+        response = await self._http_client.post(f"/api/move/goto/{move_id}/cancel")
         response.raise_for_status()
         return MoveStatus(response.json()["status"])
 
-    def set_motor_mode(self, mode: MotorControlMode) -> None:
+    async def set_motor_mode(self, mode: MotorControlMode) -> None:
         """Set the motor control mode.
 
         Args:
             mode: The motor control mode.
 
         """
-        response = self._http_client.post(f"/api/motors/set_mode/{mode.value}")
+        response = await self._http_client.post(f"/api/motors/set_mode/{mode.value}")
         response.raise_for_status()
 
-    def get_motor_status(self) -> dict[str, Any]:
+    async def get_motor_status(self) -> dict[str, Any]:
         """Get motor status.
 
         Returns:
             Motor status information.
 
         """
-        response = self._http_client.get("/api/motors/status")
+        response = await self._http_client.get("/api/motors/status")
         response.raise_for_status()
         return cast(dict[str, Any], response.json())
 
-    def get_automatic_body_rotation(self) -> bool:
+    async def get_automatic_body_rotation(self) -> bool:
         """Get the automatic body rotation setting."""
-        response = self._http_client.get("/api/motors/automatic_body_rotation")
+        response = await self._http_client.get("/api/motors/automatic_body_rotation")
         response.raise_for_status()
         return cast(bool, response.json())
 
-    def set_automatic_body_rotation(self, enabled: bool) -> None:
+    async def set_automatic_body_rotation(self, enabled: bool) -> None:
         """Set the automatic body rotation setting."""
-        response = self._http_client.post(
+        response = await self._http_client.post(
             f"/api/motors/automatic_body_rotation/{str(enabled).lower()}"
         )
         response.raise_for_status()
 
     # Convenience methods
 
-    def enable_motors(self) -> None:
+    async def enable_motors(self) -> None:
         """Enable all motors."""
-        self.set_motor_mode(MotorControlMode.Enabled)
+        await self.set_motor_mode(MotorControlMode.Enabled)
 
-    def disable_motors(self) -> None:
+    async def disable_motors(self) -> None:
         """Disable all motors."""
-        self.set_motor_mode(MotorControlMode.Disabled)
+        await self.set_motor_mode(MotorControlMode.Disabled)
 
-    def enable_gravity_compensation(self) -> None:
+    async def enable_gravity_compensation(self) -> None:
         """Enable gravity compensation mode."""
-        self.set_motor_mode(MotorControlMode.GravityCompensation)
+        await self.set_motor_mode(MotorControlMode.GravityCompensation)
 
 
 # --- Pytest Tests ---
@@ -343,34 +343,34 @@ async def test_http_only_client_basic_operations() -> None:
         client = HttpOnlyClient()
         try:
             # Test connection
-            client.connect()
+            await client.connect()
             assert client.is_connected()
 
             # Test get_state
-            state = client.get_state()
+            state = await client.get_state()
             assert state is not None
             assert state.control_mode is not None
 
             # Test get_status
-            status = client.get_status()
+            status = await client.get_status()
             assert status is not None
             assert "state" in status
 
             # Test motor mode changes
-            client.enable_motors()
-            state = client.get_state()
+            await client.enable_motors()
+            state = await client.get_state()
             assert state.control_mode == MotorControlMode.Enabled
 
-            client.disable_motors()
-            state = client.get_state()
+            await client.disable_motors()
+            state = await client.get_state()
             assert state.control_mode == MotorControlMode.Disabled
 
-            client.enable_gravity_compensation()
-            state = client.get_state()
+            await client.enable_gravity_compensation()
+            state = await client.get_state()
             assert state.control_mode == MotorControlMode.GravityCompensation
 
         finally:
-            client.disconnect()
+            await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -379,25 +379,25 @@ async def test_http_only_client_set_target() -> None:
     async with Daemon(_TEST_CONFIG):
         client = HttpOnlyClient()
         try:
-            client.connect()
-            client.enable_motors()
+            await client.connect()
+            await client.enable_motors()
 
             # Test set_target with head pose
             head_pose = np.eye(4)
             head_pose[2, 3] = 0.02  # Set z position
-            client.set_target(head=head_pose)
+            await client.set_target(head=head_pose)
 
             # Test set_target with antennas
-            client.set_target(antennas=[0.1, -0.1])
+            await client.set_target(antennas=[0.1, -0.1])
 
             # Test set_target with body_rotation
-            client.set_target(body_rotation=0.1)
+            await client.set_target(body_rotation=0.1)
 
             # Test combined target
-            client.set_target(head=head_pose, antennas=[0.0, 0.0], body_rotation=0.0)
+            await client.set_target(head=head_pose, antennas=[0.0, 0.0], body_rotation=0.0)
 
         finally:
-            client.disconnect()
+            await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -406,21 +406,21 @@ async def test_http_only_client_goto() -> None:
     async with Daemon(_TEST_CONFIG):
         client = HttpOnlyClient()
         try:
-            client.connect()
-            client.enable_motors()
+            await client.connect()
+            await client.enable_motors()
 
             # Test goto with head pose (blocking)
             head_pose = np.eye(4)
             head_pose[2, 3] = 0.02
-            move_id = client.goto(head=head_pose, duration=0.5, wait=True)
+            move_id = await client.goto(head=head_pose, duration=0.5, wait=True)
             assert move_id is not None
 
             # Verify move completed
-            status = client.get_move_status(move_id)
+            status = await client.get_move_status(move_id)
             assert status == MoveStatus.Completed
 
         finally:
-            client.disconnect()
+            await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -429,25 +429,25 @@ async def test_http_only_client_goto_async() -> None:
     async with Daemon(_TEST_CONFIG):
         client = HttpOnlyClient()
         try:
-            client.connect()
-            client.enable_motors()
+            await client.connect()
+            await client.enable_motors()
 
             # Test async goto (non-blocking)
             head_pose = np.eye(4)
             head_pose[2, 3] = 0.02
-            move_id = client.goto(head=head_pose, duration=0.5, wait=False)
+            move_id = await client.goto(head=head_pose, duration=0.5, wait=False)
             assert move_id is not None
 
             # Check status while in progress
-            status = client.get_move_status(move_id)
+            status = await client.get_move_status(move_id)
             assert status in (MoveStatus.InProgress, MoveStatus.Completed)
 
             # Wait for completion
-            final_status = client.wait_for_move_completion(move_id, timeout=5.0)
+            final_status = await client.wait_for_move_completion(move_id, timeout=5.0)
             assert final_status == MoveStatus.Completed
 
         finally:
-            client.disconnect()
+            await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -456,20 +456,20 @@ async def test_http_only_client_cancel_move() -> None:
     async with Daemon(_TEST_CONFIG):
         client = HttpOnlyClient()
         try:
-            client.connect()
-            client.enable_motors()
+            await client.connect()
+            await client.enable_motors()
 
             # Start a long move
             head_pose = np.eye(4)
             head_pose[2, 3] = 0.02
-            move_id = client.goto(head=head_pose, duration=5.0, wait=False)
+            move_id = await client.goto(head=head_pose, duration=5.0, wait=False)
 
             # Cancel it immediately
-            status = client.cancel_move(move_id)
+            status = await client.cancel_move(move_id)
             assert status == MoveStatus.Cancelled
 
         finally:
-            client.disconnect()
+            await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -478,22 +478,22 @@ async def test_http_only_client_automatic_body_rotation() -> None:
     async with Daemon(_TEST_CONFIG):
         client = HttpOnlyClient()
         try:
-            client.connect()
+            await client.connect()
 
             # Get current setting
-            initial = client.get_automatic_body_rotation()
+            initial = await client.get_automatic_body_rotation()
             assert isinstance(initial, bool)
 
             # Toggle setting
-            client.set_automatic_body_rotation(not initial)
-            assert client.get_automatic_body_rotation() == (not initial)
+            await client.set_automatic_body_rotation(not initial)
+            assert await client.get_automatic_body_rotation() == (not initial)
 
             # Restore original
-            client.set_automatic_body_rotation(initial)
-            assert client.get_automatic_body_rotation() == initial
+            await client.set_automatic_body_rotation(initial)
+            assert await client.get_automatic_body_rotation() == initial
 
         finally:
-            client.disconnect()
+            await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -502,14 +502,14 @@ async def test_http_only_client_motor_status() -> None:
     async with Daemon(_TEST_CONFIG):
         client = HttpOnlyClient()
         try:
-            client.connect()
+            await client.connect()
 
-            status = client.get_motor_status()
+            status = await client.get_motor_status()
             assert status is not None
             assert "mode" in status
 
         finally:
-            client.disconnect()
+            await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -664,11 +664,11 @@ async def test_set_target_ignored_during_goto() -> None:
     async with Daemon(_TEST_CONFIG):
         client = HttpOnlyClient()
         try:
-            client.connect()
-            client.enable_motors()
+            await client.connect()
+            await client.enable_motors()
 
             # Start a long goto (non-blocking)
-            move_id = client.goto(head=np.eye(4), duration=5.0, wait=False)
+            move_id = await client.goto(head=np.eye(4), duration=5.0, wait=False)
             assert move_id is not None
 
             # Give the move time to start
@@ -676,7 +676,7 @@ async def test_set_target_ignored_during_goto() -> None:
 
             # set_target should be ignored
             target = FullBodyTarget(antennas=(0.1, -0.1))
-            resp = client._http_client.post(
+            resp = await client._http_client.post(
                 "/api/move/set_target",
                 content=target.model_dump_json(exclude_none=True),
                 headers={"Content-Type": "application/json"},
@@ -684,10 +684,10 @@ async def test_set_target_ignored_during_goto() -> None:
             assert resp.json()["status"] == "ignored"
 
             # Cancel the goto
-            client.cancel_move(move_id)
+            await client.cancel_move(move_id)
 
             # set_target should work now
-            resp = client._http_client.post(
+            resp = await client._http_client.post(
                 "/api/move/set_target",
                 content=target.model_dump_json(exclude_none=True),
                 headers={"Content-Type": "application/json"},
@@ -695,7 +695,7 @@ async def test_set_target_ignored_during_goto() -> None:
             assert resp.json()["status"] == "ok"
 
         finally:
-            client.disconnect()
+            await client.disconnect()
 
 
 def test_goto_request_requires_target() -> None:
@@ -721,5 +721,3 @@ def test_goto_request_requires_target() -> None:
     # Should succeed: only body_rotation provided
     req = GotoRequest(body_rotation=0.1, duration=1.0)
     assert req.body_rotation == 0.1
-
-

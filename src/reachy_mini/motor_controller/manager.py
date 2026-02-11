@@ -4,6 +4,7 @@ This module provides the MotorManager class that handles the lifecycle
 of motor controllers (MuJoCo simulation, mockup simulation, or real hardware).
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from threading import Thread
@@ -150,8 +151,8 @@ class MotorManager:
         self._motor_controller_thread = Thread(target=motor_controller_wrapped_run)
         self._motor_controller_thread.start()
 
-        # Wait for motor controller to be ready
-        if not self.motor_controller.ready.wait(timeout=2.0):
+        # Wait for motor controller to be ready (non-blocking)
+        if not await asyncio.to_thread(self.motor_controller.ready.wait, timeout=2.0):
             self._error = (
                 self.motor_controller.error
                 or "Motor controller not ready after 2 seconds"
@@ -176,10 +177,10 @@ class MotorManager:
         self.logger.info("Stopping motor controller...")
         self.motor_controller.is_shutting_down = True
 
-        # Signal motor controller to stop and wait for thread
+        # Signal motor controller to stop and wait for thread (non-blocking)
         self.motor_controller.should_stop.set()
         if self._motor_controller_thread is not None:
-            self._motor_controller_thread.join(timeout=5.0)
+            await asyncio.to_thread(self._motor_controller_thread.join, timeout=5.0)
             if self._motor_controller_thread.is_alive():
                 self.logger.warning("Motor controller did not stop in time.")
 

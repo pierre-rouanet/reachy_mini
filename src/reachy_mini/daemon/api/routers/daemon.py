@@ -32,9 +32,9 @@ async def start_daemon(
 
     async def start(logger: logging.Logger) -> None:
         with busy_lock:
-            await daemon.start()
-            if wake_up and daemon._motor_manager.ready:
-                await daemon._motion_manager.wake_up()
+            await daemon.start_components()
+            if wake_up and daemon.motor_manager.ready:
+                await daemon.motion_manager.wake_up()
 
     job_id = bg_job_register.run_command("daemon-start", start)
     return {"job_id": job_id}
@@ -50,7 +50,7 @@ async def stop_daemon(
 
     async def stop(logger: logging.Logger) -> None:
         with busy_lock:
-            await daemon.stop(goto_sleep_on_stop=goto_sleep)
+            await daemon.stop_components(goto_sleep_on_stop=goto_sleep)
 
     job_id = bg_job_register.run_command("daemon-stop", stop)
     return {"job_id": job_id}

@@ -290,7 +290,7 @@ def run_daemon(args: DaemonArgs) -> None:
         _setup_asyncio_exception_handler()
 
         daemon = Daemon(args)
-        await daemon.run4ever()
+        await daemon.run_forever()
 
     try:
         asyncio.run(_run())

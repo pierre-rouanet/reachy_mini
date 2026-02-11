@@ -7,12 +7,11 @@ This module provides the main Daemon class that orchestrates all components:
 - AppManager: User application lifecycle
 - MotionManager: Motion with synchronized audio (wake_up, goto_sleep, play_move)
 
-The Daemon provides a simple high-level API: start(), stop(), run4ever(), status().
+The Daemon provides a simple high-level API: start(), stop(), run_forever(), status().
 """
 
 import asyncio
 import logging
-import signal
 from dataclasses import asdict
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
@@ -152,6 +151,11 @@ class Daemon:
         return self._config
 
     @property
+    def motor_manager(self) -> MotorManager:
+        """Get the MotorManager instance."""
+        return self._motor_manager
+
+    @property
     def motion_manager(self) -> MotionManager:
         """Get the MotionManager instance."""
         return self._motion_manager
@@ -161,33 +165,19 @@ class Daemon:
         """Get the MediaManager instance for audio."""
         return self._audio_manager
 
-    async def start(self) -> DaemonState:
-        """Start the Reachy Mini daemon.
+    async def start_components(self) -> bool:
+        """Start all components except the API server.
+
+        Starts audio, motor controller, motion manager, and WebRTC.
 
         Returns:
-            DaemonState: The current state after attempting to start.
+            True if motor controller started successfully.
 
         """
-        if self._state == DaemonState.RUNNING:
-            self.logger.warning("Daemon is already running.")
-            return self._state
-
         # Handle localhost_only default based on wireless_version
         localhost_only = self._config.localhost_only
         if localhost_only is None:
             localhost_only = not self._config.wireless_version
-
-        self.logger.info(
-            f"Daemon start parameters: sim={self._config.sim}, "
-            f"mockup_sim={self._config.mockup_sim}, "
-            f"serialport={self._config.serialport}, scene={self._config.scene}, "
-            f"localhost_only={localhost_only}, "
-            f"wake_up_on_start={self._config.wake_up_on_start}, "
-            f"check_collision={self._config.check_collision}, "
-            f"kinematics_engine={self._config.kinematics_engine}, "
-            f"headless={self._config.headless}, "
-            f"hardware_config_filepath={self._config.hardware_config_filepath}"
-        )
 
         # Update status
         self._simulation_enabled = self._config.sim
@@ -195,18 +185,8 @@ class Daemon:
         if not localhost_only:
             self._wlan_ip = get_ip_address()
 
-        self.logger.info("Starting Reachy Mini daemon...")
         self._state = DaemonState.STARTING
-        # Clear previous error
         self._error = None
-
-        # 0. Check port availability early (before starting motor controller)
-        # This prevents hanging when another daemon is running
-        if not is_port_available(self._config.fastapi_host, self._config.fastapi_port):
-            raise RuntimeError(
-                f"Port {self._config.fastapi_port} is already in use on {self._config.fastapi_host}. "
-                "Another daemon or process may be running on this port."
-            )
 
         # 1. Start the audio manager (if audio enabled)
         if self._config.use_audio:
@@ -238,7 +218,6 @@ class Daemon:
             self.logger.error(f"Error while starting motor controller: {e}")
             self._state = DaemonState.ERROR
             self._error = str(e)
-            # Continue to start FastAPI so status can be queried
 
         # 3. Wire up motion manager with motor controller and audio
         self._motion_manager.set_motor_controller(self._motor_manager.motor_controller)
@@ -263,19 +242,107 @@ class Daemon:
             self._webrtc_manager.set_daemon(self)
             await self._webrtc_manager.start()
 
-        # 6. Start FastAPI server (always start so status can be queried)
-        await self._api_manager.start_server(self._config)
+        if motor_started and self._state != DaemonState.ERROR:
+            self._state = DaemonState.RUNNING
+
+        return motor_started
+
+    async def start(self) -> DaemonState:
+        """Start the Reachy Mini daemon (components + API server).
+
+        Returns:
+            DaemonState: The current state after attempting to start.
+
+        """
+        if self._state == DaemonState.RUNNING:
+            self.logger.warning("Daemon is already running.")
+            return self._state
+
+        self.logger.info(
+            f"Daemon start parameters: sim={self._config.sim}, "
+            f"mockup_sim={self._config.mockup_sim}, "
+            f"serialport={self._config.serialport}, scene={self._config.scene}, "
+            f"wake_up_on_start={self._config.wake_up_on_start}, "
+            f"check_collision={self._config.check_collision}, "
+            f"kinematics_engine={self._config.kinematics_engine}, "
+            f"headless={self._config.headless}, "
+            f"hardware_config_filepath={self._config.hardware_config_filepath}"
+        )
+
+        # Check port availability early (before starting motor controller)
+        if not is_port_available(self._config.fastapi_host, self._config.fastapi_port):
+            raise RuntimeError(
+                f"Port {self._config.fastapi_port} is already in use on {self._config.fastapi_host}. "
+                "Another daemon or process may be running on this port."
+            )
+
+        self.logger.info("Starting Reachy Mini daemon...")
+        motor_started = await self.start_components()
+
+        # Start FastAPI server (always start so status can be queried)
+        await self._api_manager.start(self._config)
 
         if motor_started and self._state != DaemonState.ERROR:
             self.logger.info("Daemon started successfully.")
-            self._state = DaemonState.RUNNING
         else:
             self.logger.warning("Daemon started with errors (motor controller failed).")
 
         return self._state
 
+    async def stop_components(self, goto_sleep_on_stop: bool | None = None) -> None:
+        """Stop all components except the API server.
+
+        Args:
+            goto_sleep_on_stop: If True, put the robot to sleep before stopping.
+                If None, uses the value from config.
+
+        """
+        # Use config value if not specified
+        if goto_sleep_on_stop is None:
+            goto_sleep_on_stop = self._config.goto_sleep_on_stop
+
+        if self._state in (DaemonState.STOPPING, DaemonState.ERROR):
+            goto_sleep_on_stop = False
+
+        self.logger.info("Stopping components...")
+        self._state = DaemonState.STOPPING
+
+        # 1. Pause WebRTC (keep signaling server running for restart)
+        self._webrtc_manager.pause()
+
+        # 2. Go to sleep if requested (uses motion manager for sound)
+        if goto_sleep_on_stop and self._motor_manager.ready:
+            assert (
+                self.motor_controller is not None
+            )  # Guaranteed by _motor_manager.ready
+            try:
+                self.logger.info("Putting robot to sleep...")
+                self.motor_controller.set_motor_control_mode(
+                    MotorControlMode.Enabled
+                )
+                await self._motion_manager.goto_sleep()
+                self.motor_controller.set_motor_control_mode(
+                    MotorControlMode.Disabled
+                )
+            except Exception as e:
+                self.logger.error(f"Error while putting robot to sleep: {e}")
+            except KeyboardInterrupt:
+                self.logger.warning("Sleep interrupted by user.")
+
+        # 3. Stop the motor controller (if running)
+        if self._motor_manager.ready:
+            await self._motor_manager.stop()
+
+        # 4. Stop audio manager
+        if self._audio_manager is not None:
+            self._audio_manager.close()
+            self._audio_manager = None
+
+        self._state = DaemonState.STOPPED
+        self.logger.info("Components stopped.")
+
     async def stop(self, goto_sleep_on_stop: bool | None = None) -> DaemonState:
-        """Stop the Reachy Mini daemon.
+        """Stop the Reachy Mini daemon (components + API server).
 
         Args:
             goto_sleep_on_stop: If True, put the robot to sleep before stopping.
@@ -289,54 +356,10 @@ class Daemon:
             self.logger.warning("Daemon is already stopped.")
             return self._state
 
-        # Use config value if not specified
-        if goto_sleep_on_stop is None:
-            goto_sleep_on_stop = self._config.goto_sleep_on_stop
-
         try:
-            if self._state in (DaemonState.STOPPING, DaemonState.ERROR):
-                goto_sleep_on_stop = False
-
-            self.logger.info("Stopping Reachy Mini daemon...")
-            self._state = DaemonState.STOPPING
-
-            # 1. Pause WebRTC (keep signaling server running for restart)
-            self._webrtc_manager.pause()
-
-            # 2. Go to sleep if requested (uses motion manager for sound)
-            if goto_sleep_on_stop and self._motor_manager.ready:
-                assert (
-                    self.motor_controller is not None
-                )  # Guaranteed by _motor_manager.ready
-                try:
-                    self.logger.info("Putting robot to sleep...")
-                    self.motor_controller.set_motor_control_mode(
-                        MotorControlMode.Enabled
-                    )
-                    await self._motion_manager.goto_sleep()
-                    self.motor_controller.set_motor_control_mode(
-                        MotorControlMode.Disabled
-                    )
-                except Exception as e:
-                    self.logger.error(f"Error while putting robot to sleep: {e}")
-                except KeyboardInterrupt:
-                    self.logger.warning("Sleep interrupted by user.")
-
-            # 3. Stop the motor controller (if running)
-            if self._motor_manager.ready:
-                await self._motor_manager.stop()
-
-            # 4. Stop audio manager
-            if self._audio_manager is not None:
-                self._audio_manager.close()
-                self._audio_manager = None
-
-            # 4. Stop FastAPI server
-            await self._api_manager.stop_server()
-
+            await self.stop_components(goto_sleep_on_stop)
+            await self._api_manager.stop()
             self.logger.info("Daemon stopped successfully.")
-            self._state = DaemonState.STOPPED
-
         except Exception as e:
             self.logger.error(f"Error while stopping the daemon: {e}")
             self._state = DaemonState.ERROR
@@ -347,7 +370,7 @@ class Daemon:
         return self._state
 
     async def restart(self, config: DaemonArgs | None = None) -> DaemonState:
-        """Restart the Reachy Mini daemon.
+        """Restart the Reachy Mini daemon components (API stays up).
 
         Args:
             config: Optional new configuration. If None, reuses current config.
@@ -363,13 +386,13 @@ class Daemon:
         if self._state in (DaemonState.RUNNING, DaemonState.ERROR):
             self.logger.info("Restarting Reachy Mini daemon...")
 
-            # Use goto_sleep=False during restart to avoid unnecessary movement
-            await self.stop(goto_sleep_on_stop=False)
+            await self.stop_components(goto_sleep_on_stop=False)
 
             if config is not None:
                 self._config = config
 
-            return await self.start()
+            await self.start_components()
+            return self._state
 
         raise NotImplementedError(
             "Restarting is only supported when daemon is in RUNNING or ERROR state."
@@ -406,14 +429,13 @@ class Daemon:
             version=self._version,
         )
 
-    async def run4ever(self) -> None:
+    async def run_forever(self) -> None:
         """Run the Reachy Mini daemon indefinitely.
 
-        Starts the daemon (motor controller + FastAPI server) and blocks until shutdown.
-        This is the main entry point when running from main.py.
+        Starts the daemon components and runs the API server until shutdown.
+        Uvicorn handles SIGINT/SIGTERM internally for graceful shutdown.
 
         Respects config options:
-        - autostart: If False, only starts FastAPI server (motor controller via API)
         - preload_datasets: Pre-download recorded move datasets at startup
         - dataset_update_interval_hours: Interval for background dataset updates
         """
@@ -456,48 +478,22 @@ class Daemon:
                 f"Dataset updater started (interval: {self._config.dataset_update_interval_hours}h)"
             )
 
-        await self.start()
+        await self.start_components()
 
-        if self._state in (DaemonState.RUNNING, DaemonState.ERROR):
-            # Set up shutdown event for signal handling
-            shutdown_event = asyncio.Event()
+        if self._state not in (DaemonState.RUNNING, DaemonState.ERROR):
+            await self.stop_components()
+            return
 
-            def signal_handler() -> None:
-                self.logger.warning("Received shutdown signal.")
-                # Signal server to stop immediately
-                if self._api_manager._uvicorn_server is not None:
-                    self._api_manager._uvicorn_server.should_exit = True
-                shutdown_event.set()
+        try:
+            self.logger.info("Daemon is running. Press Ctrl+C to stop.")
+            await self._api_manager.serve(self._config)
+        finally:
+            # Cancel dataset updater task
+            if dataset_updater_task is not None:
+                dataset_updater_task.cancel()
+                try:
+                    await dataset_updater_task
+                except asyncio.CancelledError:
+                    pass
 
-            # Register signal handlers
-            loop = asyncio.get_running_loop()
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, signal_handler)
-
-            try:
-                self.logger.info("Daemon is running. Press Ctrl+C to stop.")
-                # Wait for shutdown signal or server thread to stop
-                while (
-                    not shutdown_event.is_set()
-                    and self._api_manager._server_thread is not None
-                    and self._api_manager._server_thread.is_alive()
-                ):
-                    await asyncio.sleep(0.1)
-            except Exception as e:
-                self.logger.error(f"An error occurred: {e}")
-                self._state = DaemonState.ERROR
-                self._error = str(e)
-            finally:
-                # Remove signal handlers
-                for sig in (signal.SIGINT, signal.SIGTERM):
-                    loop.remove_signal_handler(sig)
-
-                # Cancel dataset updater task
-                if dataset_updater_task is not None:
-                    dataset_updater_task.cancel()
-                    try:
-                        await dataset_updater_task
-                    except asyncio.CancelledError:
-                        pass
-
-        await self.stop()
+            await self.stop_components()

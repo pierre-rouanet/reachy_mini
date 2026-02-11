@@ -1,4 +1,4 @@
-"""Monitor GPIO24 for shutdown signal."""
+"""Monitor GPIO23 for shutdown signal."""
 
 import time
 from signal import pause

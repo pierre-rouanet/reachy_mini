@@ -7,7 +7,6 @@ the FastAPI HTTP server for REST API and WebSocket endpoints.
 import asyncio
 import logging
 import socket
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -77,7 +76,7 @@ class ApiManager:
 
         self._fastapi_app: FastAPI | None = None
         self._uvicorn_server: uvicorn.Server | None = None
-        self._server_thread: threading.Thread | None = None
+        self._server_task: asyncio.Task | None = None
         self._last_host: str = "0.0.0.0"
         self._last_port: int = 8000
 
@@ -89,6 +88,16 @@ class ApiManager:
     def fastapi_app(self) -> FastAPI | None:
         """Get the FastAPI application instance."""
         return self._fastapi_app
+
+    @property
+    def is_running(self) -> bool:
+        """Check if the server is running."""
+        return self._server_task is not None and not self._server_task.done()
+
+    def request_shutdown(self) -> None:
+        """Request server shutdown (sync, safe from any context)."""
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True
 
     def create_fastapi_app(
         self,
@@ -194,18 +203,27 @@ class ApiManager:
         self._fastapi_app = app
         return app
 
-    async def run_server(
+    async def serve(
         self,
         args: DaemonArgs,
         health_check_event: asyncio.Event | None = None,
     ) -> None:
         """Run the FastAPI server with uvicorn (blocking).
 
+        This is the main entry point for run_forever(). Uvicorn handles
+        SIGINT/SIGTERM internally for graceful shutdown.
+
         Args:
             args: Configuration arguments (DaemonArgs dataclass).
             health_check_event: Optional event for health check endpoint.
 
         """
+        if not is_port_available(args.fastapi_host, args.fastapi_port):
+            raise RuntimeError(
+                f"Port {args.fastapi_port} is already in use on {args.fastapi_host}. "
+                "Another daemon or process may be running on this port."
+            )
+
         app = self.create_fastapi_app(args, health_check_event)
 
         config = uvicorn.Config(
@@ -242,11 +260,6 @@ class ApiManager:
                     health_check_timeout(args.timeout_health_check)
                 )
             await self._uvicorn_server.serve()
-        except KeyboardInterrupt:
-            logging.info("Received Ctrl-C, shutting down gracefully.")
-        except Exception as e:
-            logging.exception(f"Error during server operation: {e}")
-            raise
         finally:
             if health_check_task and not health_check_task.done():
                 health_check_task.cancel()
@@ -255,19 +268,19 @@ class ApiManager:
                 except asyncio.CancelledError:
                     pass
 
-    async def start_server(
+    async def start(
         self,
         args: DaemonArgs,
         health_check_event: asyncio.Event | None = None,
     ) -> None:
-        """Start the FastAPI server in a background thread.
+        """Start the FastAPI server as a background asyncio task.
 
         Args:
             args: Configuration arguments (DaemonArgs dataclass).
             health_check_event: Optional event for health check endpoint.
 
         """
-        if self._server_thread is not None and self._server_thread.is_alive():
+        if self._server_task is not None and not self._server_task.done():
             self.logger.warning("Server is already running.")
             return
 
@@ -293,11 +306,7 @@ class ApiManager:
         server = uvicorn.Server(config)
         self._uvicorn_server = server
 
-        def run_server() -> None:
-            asyncio.run(server.serve())
-
-        self._server_thread = threading.Thread(target=run_server, daemon=True)
-        self._server_thread.start()
+        self._server_task = asyncio.create_task(server.serve())
 
         # Wait for server to actually start (bind to port)
         timeout = 5.0
@@ -313,25 +322,19 @@ class ApiManager:
 
         self.logger.info(f"FastAPI server started on {args.fastapi_host}:{args.fastapi_port}")
 
-    async def stop_server(self) -> None:
+    async def stop(self) -> None:
         """Stop the FastAPI server."""
         if self._uvicorn_server is not None:
             self.logger.info("Stopping FastAPI server...")
             self._uvicorn_server.should_exit = True
 
-        if self._server_thread is not None and self._server_thread.is_alive():
-            # Wait for thread to finish with timeout
-            timeout = 5.0
-            poll_interval = 0.05
-            elapsed = 0.0
-            while self._server_thread.is_alive() and elapsed < timeout:
-                await asyncio.sleep(poll_interval)
-                elapsed += poll_interval
+        if self._server_task is not None:
+            try:
+                await self._server_task
+            except Exception:
+                pass
+            self._server_task = None
 
-            if self._server_thread.is_alive():
-                self.logger.warning("Server thread did not finish in time.")
-
-        self._server_thread = None
         self._uvicorn_server = None
 
         # Wait for port to be fully released (OS may keep socket in TIME_WAIT)
