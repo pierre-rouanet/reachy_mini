@@ -7,14 +7,15 @@ managing the robot's state.
 
 """
 
-import argparse
 import asyncio
 import logging
 import sys
 import types
 from typing import Any
 
-from reachy_mini.daemon.args import DaemonArgs, KinematicsEngine, LogLevel
+import tyro
+
+from reachy_mini.daemon.args import DaemonArgs
 from reachy_mini.daemon.daemon import Daemon
 from reachy_mini.media.audio_utils import (
     check_reachymini_asoundrc,
@@ -87,201 +88,6 @@ def _setup_asyncio_exception_handler() -> None:
     loop.set_exception_handler(asyncio_exception_handler)
 
 
-def _create_parser() -> argparse.ArgumentParser:
-    """Create the argument parser with all daemon options."""
-    defaults = DaemonArgs()
-
-    parser = argparse.ArgumentParser(description="Run the Reachy Mini daemon.")
-
-    # Logging options
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        choices=[level.value for level in LogLevel],
-        default=defaults.log_level.value,
-        help=f"Set the logging level (default: {defaults.log_level.value}).",
-    )
-    parser.add_argument(
-        "--log-file",
-        type=str,
-        default=defaults.log_file,
-        help="Path to a file to write logs to.",
-    )
-
-    # Daemon mode options
-    parser.add_argument(
-        "--wireless-version",
-        action="store_true",
-        default=defaults.wireless_version,
-        help="Use the wireless version of Reachy Mini.",
-    )
-    parser.add_argument(
-        "--desktop-app-daemon",
-        action="store_true",
-        default=defaults.desktop_app_daemon,
-        help="Use the desktop version of Reachy Mini.",
-    )
-
-    # Robot identification
-    parser.add_argument(
-        "--robot-name",
-        type=str,
-        default=defaults.robot_name,
-        help=f"Name of the robot (default: {defaults.robot_name}).",
-    )
-
-    # Real robot mode
-    parser.add_argument(
-        "-p",
-        "--serialport",
-        type=str,
-        default=defaults.serialport,
-        help="Serial port for real motors (auto to find automatically).",
-    )
-    parser.add_argument(
-        "--hardware-config-filepath",
-        type=str,
-        default=None,
-        help="Path to the hardware configuration YAML file.",
-    )
-
-    # Simulation mode
-    parser.add_argument(
-        "--sim",
-        action="store_true",
-        default=defaults.sim,
-        help="Run in simulation mode using MuJoCo.",
-    )
-    parser.add_argument(
-        "--mockup-sim",
-        action="store_true",
-        default=defaults.mockup_sim,
-        help="Run in mockup simulation mode (no MuJoCo required).",
-    )
-    parser.add_argument(
-        "--scene",
-        type=str,
-        default=defaults.scene,
-        help=f"Name of the scene to load (default: {defaults.scene}).",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        default=defaults.headless,
-        help="Run the daemon in headless mode.",
-    )
-    parser.add_argument(
-        "--use-audio",
-        action=argparse.BooleanOptionalAction,
-        default=defaults.use_audio,
-        help="Enable audio.",
-    )
-
-    # Kinematics options
-    parser.add_argument(
-        "--kinematics-engine",
-        type=str,
-        choices=[engine.value for engine in KinematicsEngine],
-        default=defaults.kinematics_engine.value,
-        help=f"Set the kinematics engine (default: {defaults.kinematics_engine.value}).",
-    )
-    parser.add_argument(
-        "--check-collision",
-        action="store_true",
-        default=defaults.check_collision,
-        help="Enable collision checking.",
-    )
-
-    # Daemon lifecycle options
-    parser.add_argument(
-        "--autostart",
-        action=argparse.BooleanOptionalAction,
-        default=defaults.autostart,
-        help="Automatically start the backend on launch.",
-    )
-    parser.add_argument(
-        "--timeout-health-check",
-        type=float,
-        default=defaults.timeout_health_check,
-        help="Set the health check timeout in seconds.",
-    )
-    parser.add_argument(
-        "--wake-up-on-start",
-        action=argparse.BooleanOptionalAction,
-        default=defaults.wake_up_on_start,
-        help="Wake up the robot on backend start.",
-    )
-    parser.add_argument(
-        "--goto-sleep-on-stop",
-        action=argparse.BooleanOptionalAction,
-        default=defaults.goto_sleep_on_stop,
-        help="Put the robot to sleep on backend stop.",
-    )
-    parser.add_argument(
-        "--preload-datasets",
-        action=argparse.BooleanOptionalAction,
-        default=defaults.preload_datasets,
-        help="Pre-download recorded move datasets at startup.",
-    )
-    parser.add_argument(
-        "--dataset-update-interval-hours",
-        type=float,
-        default=defaults.dataset_update_interval_hours,
-        help="Interval in hours for background dataset update checks (0 to disable).",
-    )
-
-    # Server options
-    parser.add_argument(
-        "--fastapi-host",
-        type=str,
-        default=defaults.fastapi_host,
-        help=f"Host address for FastAPI server (default: {defaults.fastapi_host}).",
-    )
-    parser.add_argument(
-        "--fastapi-port",
-        type=int,
-        default=defaults.fastapi_port,
-        help=f"Port for FastAPI server (default: {defaults.fastapi_port}).",
-    )
-    parser.add_argument(
-        "--localhost-only",
-        action=argparse.BooleanOptionalAction,
-        default=defaults.localhost_only,
-        help="Restrict the server to localhost only.",
-    )
-
-    return parser
-
-
-def _parse_args_to_daemon_args(namespace: argparse.Namespace) -> DaemonArgs:
-    """Convert parsed argparse namespace to DaemonArgs dataclass."""
-    return DaemonArgs(
-        log_level=LogLevel(namespace.log_level),
-        log_file=namespace.log_file,
-        wireless_version=namespace.wireless_version,
-        desktop_app_daemon=namespace.desktop_app_daemon,
-        robot_name=namespace.robot_name,
-        serialport=namespace.serialport,
-        hardware_config_filepath=namespace.hardware_config_filepath,
-        sim=namespace.sim,
-        mockup_sim=namespace.mockup_sim,
-        scene=namespace.scene,
-        headless=namespace.headless,
-        use_audio=namespace.use_audio,
-        kinematics_engine=KinematicsEngine(namespace.kinematics_engine),
-        check_collision=namespace.check_collision,
-        autostart=namespace.autostart,
-        timeout_health_check=namespace.timeout_health_check,
-        wake_up_on_start=namespace.wake_up_on_start,
-        goto_sleep_on_stop=namespace.goto_sleep_on_stop,
-        preload_datasets=namespace.preload_datasets,
-        dataset_update_interval_hours=namespace.dataset_update_interval_hours,
-        fastapi_host=namespace.fastapi_host,
-        fastapi_port=namespace.fastapi_port,
-        localhost_only=namespace.localhost_only,
-    )
-
-
 def run_daemon(args: DaemonArgs) -> None:
     """Run the daemon with the given arguments."""
     _setup_logging(args)
@@ -304,9 +110,7 @@ def run_daemon(args: DaemonArgs) -> None:
 
 def main() -> None:
     """Parse arguments and run the daemon."""
-    parser = _create_parser()
-    namespace = parser.parse_args()
-    args = _parse_args_to_daemon_args(namespace)
+    args = tyro.cli(DaemonArgs)
 
     if args.log_file:
         file_handler = logging.FileHandler(args.log_file, mode="a")
