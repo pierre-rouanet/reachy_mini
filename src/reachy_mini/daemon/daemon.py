@@ -27,6 +27,7 @@ from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.manager import MotionManager
 from reachy_mini.motor_controller.abstract import MotorController, MotorControlMode
 from reachy_mini.motor_controller.factory import create_motor_controller
+from reachy_mini.sensors.imu import IMUSensor
 
 
 class DaemonState(Enum):
@@ -89,8 +90,9 @@ class Daemon:
         self._simulation_enabled: Optional[bool] = None
         self._mockup_sim_enabled: Optional[bool] = None
 
-        # Motor controller (created in start_components)
+        # Motor controller and sensors (created in start_components)
         self._motor_controller: MotorController | None = None
+        self._imu: IMUSensor | None = None
 
         # Create managers
         self._audio_manager: Optional[MediaManager] = None
@@ -135,6 +137,11 @@ class Daemon:
     def motor_controller(self) -> Optional[MotorController]:
         """Get the current motor controller (None if not started)."""
         return self._motor_controller
+
+    @property
+    def imu(self) -> Optional[IMUSensor]:
+        """Get the IMU sensor (None if not available)."""
+        return self._imu
 
     @property
     def app_manager(self) -> AppManager:
@@ -196,7 +203,14 @@ class Daemon:
                 self.logger.warning(f"Failed to initialize audio: {e}")
                 # Audio failure is not critical, continue without it
 
-        # 2. Start the motor controller
+        # 2. Initialize IMU sensor (if wireless version)
+        if self._config.wireless_version:
+            try:
+                self._imu = IMUSensor()
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize IMU: {e}")
+
+        # 3. Start the motor controller
         motor_started = False
         try:
             self._motor_controller = create_motor_controller(

@@ -1,5 +1,7 @@
 """FastAPI common request dependencies."""
 
+from typing import TYPE_CHECKING
+
 from fastapi import HTTPException, Request, WebSocket
 
 from reachy_mini.media.media_manager import MediaManager
@@ -8,6 +10,9 @@ from reachy_mini.motor_controller.abstract import MotorController
 
 from ...apps.manager import AppManager
 from ..daemon import Daemon
+
+if TYPE_CHECKING:
+    from reachy_mini.sensors.imu import IMUSensor
 
 
 def get_daemon(request: Request) -> Daemon:
@@ -38,6 +43,11 @@ def get_motion_manager(request: Request) -> MotionManager:
 def get_audio(request: Request) -> MediaManager | None:
     """Get the audio manager as request dependency (may be None if audio disabled)."""
     return get_daemon(request).audio
+
+
+def get_imu(request: Request) -> "IMUSensor | None":
+    """Get the IMU sensor as request dependency (may be None if not available)."""
+    return get_daemon(request).imu
 
 
 def get_app_manager(request: Request) -> "AppManager":

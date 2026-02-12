@@ -220,8 +220,9 @@ class StreamingSession:
                 state = build_state(
                     self._handler.motor_controller,
                     self._handler.audio,
-                    self._subscribe_config.fields,
-                    self._subscribe_config.sensors,
+                    imu=self._handler.imu,
+                    fields=self._subscribe_config.fields,
+                    sensors=self._subscribe_config.sensors,
                 )
                 await self.send_event(StateEvent(state=state))
                 await asyncio.sleep(period)

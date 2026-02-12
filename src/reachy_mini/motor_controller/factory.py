@@ -96,6 +96,5 @@ def create_motor_controller(
             log_level=log_level,
             check_collision=check_collision,
             kinematics_engine=kinematics_engine,
-            wireless_version=wireless_version,
             hardware_config_filepath=hardware_config_filepath,
         )

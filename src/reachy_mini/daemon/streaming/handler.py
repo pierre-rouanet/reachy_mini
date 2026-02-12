@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
+
 from reachy_mini.daemon.streaming.messages import (
     AutomaticBodyRotationChangedEvent,
     CancelCommand,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from reachy_mini.media.media_manager import MediaManager
     from reachy_mini.motion.manager import MotionManager
     from reachy_mini.motor_controller.abstract import MotorController
+    from reachy_mini.sensors.imu import IMUSensor
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ class ProtocolHandler:
         motor_controller: MotorController,
         motion_manager: MotionManager,
         audio: MediaManager | None,
+        imu: IMUSensor | None,
         daemon: Daemon,
     ) -> None:
         """Initialize the protocol handler.
@@ -65,12 +68,14 @@ class ProtocolHandler:
             motor_controller: The motor controller instance.
             motion_manager: The motion manager for goto and move tracking.
             audio: Optional audio/media manager for DoA sensor.
+            imu: Optional IMU sensor.
             daemon: The daemon instance for status queries.
 
         """
         self._motor_controller = motor_controller
         self._motion_manager = motion_manager
         self._audio = audio
+        self._imu = imu
         self._daemon = daemon
 
     @property
@@ -87,6 +92,11 @@ class ProtocolHandler:
     def audio(self) -> MediaManager | None:
         """Get the audio manager (may be None)."""
         return self._audio
+
+    @property
+    def imu(self) -> IMUSensor | None:
+        """Get the IMU sensor (may be None)."""
+        return self._imu
 
     @property
     def daemon(self) -> Daemon:
@@ -223,7 +233,7 @@ class ProtocolHandler:
         if self._audio:
             available_sensors.append("doa")
 
-        if hasattr(mc, "get_imu_data") and mc.get_imu_data() is not None:
+        if self._imu is not None:
             available_sensors.append("imu")
 
         await session.send_event(

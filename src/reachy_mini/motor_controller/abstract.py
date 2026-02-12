@@ -75,7 +75,6 @@ class MotorController(ABC):
         log_level: str = "INFO",
         check_collision: bool = False,
         kinematics_engine: str = "AnalyticalKinematics",
-        wireless_version: bool = False,
     ) -> None:
         """Initialize the backend."""
         self.logger = logging.getLogger(__name__)

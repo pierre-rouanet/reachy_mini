@@ -124,6 +124,7 @@ class StreamingManager:
             motor_controller=motor_controller,
             motion_manager=self._daemon.motion_manager,
             audio=self._daemon.audio,
+            imu=self._daemon.imu,
             daemon=self._daemon,
         )
         return StreamingSession(transport, handler)

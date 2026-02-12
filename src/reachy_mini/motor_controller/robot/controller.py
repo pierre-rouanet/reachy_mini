@@ -8,7 +8,6 @@ import logging
 import struct
 import time
 from datetime import timedelta
-from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -31,7 +30,6 @@ class RobotController(MotorController):
         check_collision: bool = False,
         kinematics_engine: str = "AnalyticalKinematics",
         hardware_error_check_frequency: float = 1.0,
-        wireless_version: bool = False,
         hardware_config_filepath: str | None = None,
     ):
         """Initialize the RobotController.
@@ -42,14 +40,12 @@ class RobotController(MotorController):
             check_collision (bool): If True, enable collision checking. Default is False.
             kinematics_engine (str): Kinematics engine to use. Defaults to "AnalyticalKinematics".
             hardware_error_check_frequency (float): Frequency in seconds to check for hardware errors. Default is 1.0.
-            wireless_version (bool): If True, indicates that the wireless version of Reachy Mini is used. Default is False.
             hardware_config_filepath (str | None): Path to the hardware configuration YAML file. Default is None.
 
         """
         super().__init__(
             check_collision=check_collision,
             kinematics_engine=kinematics_engine,
-            wireless_version=wireless_version,
         )
 
         self.logger = logging.getLogger(__name__)
@@ -57,9 +53,7 @@ class RobotController(MotorController):
 
         self.c: ReachyMiniPyControlLoop | None = ReachyMiniPyControlLoop(
             serialport,
-            read_position_loop_period=timedelta(
-                seconds=1.0 / self.control_frequency
-            ),
+            read_position_loop_period=timedelta(seconds=1.0 / self.control_frequency),
             allowed_retries=5,
             stats_pub_period=timedelta(seconds=1.0),
         )
@@ -97,17 +91,6 @@ class RobotController(MotorController):
         self.hardware_error_check_period = 1.0 / hardware_error_check_frequency
         self._last_hardware_error_check_time = 0.0
 
-        # Initialize IMU for wireless version
-        self.bmi088: Any = None
-        if wireless_version:
-            try:
-                from bmi088 import BMI088
-
-                self.bmi088 = BMI088(i2c_bus=4)
-                self.logger.info("BMI088 IMU initialized successfully")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize IMU: {e}")
-
     # Template method hooks
 
     def _on_start(self) -> None:
@@ -138,7 +121,9 @@ class RobotController(MotorController):
 
         # Add motor controller specific stats
         if self.c is not None:
-            self._status.control_loop_stats["motor_controller"] = str(self.c.get_stats())
+            self._status.control_loop_stats["motor_controller"] = str(
+                self.c.get_stats()
+            )
 
     def _check_hardware_errors(self) -> None:
         """Check for hardware errors and log them."""
@@ -181,9 +166,7 @@ class RobotController(MotorController):
                 self.compensate_head_gravity()
             if self.target_stewart_current is not None:
                 self.c.set_stewart_platform_goal_current(
-                    np.round(self.target_stewart_current, 0)
-                    .astype(int)
-                    .tolist()
+                    np.round(self.target_stewart_current, 0).astype(int).tolist()
                 )
 
         if self._current_antennas_operation_mode != 0:  # Position control mode
@@ -232,9 +215,7 @@ class RobotController(MotorController):
             motor_pos = self.c.get_last_position()
             self.target_body_yaw = motor_pos.body_yaw
             self.target_stewart_positions = np.array(motor_pos.stewart)
-            self.c.set_stewart_platform_position(
-                self.target_stewart_positions.tolist()
-            )
+            self.c.set_stewart_platform_position(self.target_stewart_positions.tolist())
             self.c.set_body_rotation(self.target_body_yaw)
             self.c.enable_body_rotation(True)
             self.c.set_body_rotation_operating_mode(0)
@@ -315,30 +296,6 @@ class RobotController(MotorController):
         else:
             self.c.disable_torque_on_ids(ids_int)
 
-    # IMU and hardware methods
-
-    def get_imu_data(self) -> dict[str, list[float] | float] | None:
-        """Get current IMU data (accelerometer, gyroscope, quaternion, temperature)."""
-        if self.bmi088 is None:
-            return None
-
-        try:
-            accel_x, accel_y, accel_z = self.bmi088.read_accelerometer(m_per_s2=True)
-            gyro_x, gyro_y, gyro_z = self.bmi088.read_gyroscope(deg_per_s=False)
-            dt = 1.0 / self.control_frequency
-            quat = self.bmi088.get_quat(dt)
-            temperature = self.bmi088.read_temperature()
-
-            return {
-                "accelerometer": [float(accel_x), float(accel_y), float(accel_z)],
-                "gyroscope": [float(gyro_x), float(gyro_y), float(gyro_z)],
-                "quaternion": [float(q) for q in quat],
-                "temperature": float(temperature),
-            }
-        except Exception as e:
-            self.logger.error(f"Error reading IMU data: {e}")
-            return None
-
     def compensate_head_gravity(self) -> None:
         """Calculate the currents necessary to compensate for gravity."""
         assert self.kinematics_engine == "Placo", (
@@ -350,7 +307,9 @@ class RobotController(MotorController):
         from_Nm_to_mA = 1.47 / 0.52 * 1000
         correction_factor = 4.0
 
-        joints_7 = pack_joints(self.current_body_yaw, self.get_present_stewart_positions())
+        joints_7 = pack_joints(
+            self.current_body_yaw, self.get_present_stewart_positions()
+        )
         gravity_torque = self.head_kinematics.compute_gravity_torque(  # type: ignore [union-attr]
             joints_7
         )
@@ -409,5 +368,3 @@ class RobotController(MotorController):
                     errors[name] = err
 
         return errors
-
-

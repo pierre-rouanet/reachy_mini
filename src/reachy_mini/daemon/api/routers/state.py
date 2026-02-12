@@ -13,8 +13,9 @@ from reachy_mini.daemon.models import AnyPose, DoAData, FullState, pose_from_num
 from reachy_mini.daemon.state_builder import build_state
 from reachy_mini.media.media_manager import MediaManager
 from reachy_mini.motor_controller.abstract import MotorController
+from reachy_mini.sensors.imu import IMUSensor
 
-from ..dependencies import get_audio, get_motor_controller
+from ..dependencies import get_audio, get_imu, get_motor_controller
 
 router = APIRouter(prefix="/state")
 
@@ -88,6 +89,7 @@ async def get_full_state(
     use_pose_matrix: bool = False,
     motor_controller: MotorController = Depends(get_motor_controller),
     audio: MediaManager | None = Depends(get_audio),
+    imu: IMUSensor | None = Depends(get_imu),
 ) -> FullState:
     """Get the full robot state, with optional fields.
 
@@ -111,8 +113,15 @@ async def get_full_state(
 
     sensor_list: list[str] | None = None
     if sensors:
-        sensor_list = sensors.split(",") if sensors != "all" else ["doa"]  # TODO: get from registry
+        sensor_list = (
+            sensors.split(",") if sensors != "all" else ["doa"]
+        )  # TODO: get from registry
 
-    return build_state(motor_controller, audio, fields, sensor_list, use_pose_matrix)
-
-
+    return build_state(
+        motor_controller,
+        audio,
+        imu=imu,
+        fields=fields,
+        sensors=sensor_list,
+        use_pose_matrix=use_pose_matrix,
+    )

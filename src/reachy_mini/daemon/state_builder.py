@@ -12,16 +12,18 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
-from reachy_mini.daemon.models import DoAData, FullState, IMUData, pose_from_numpy
+from reachy_mini.daemon.models import DoAData, FullState, pose_from_numpy
 
 if TYPE_CHECKING:
     from reachy_mini.media.media_manager import MediaManager
     from reachy_mini.motor_controller.abstract import MotorController
+    from reachy_mini.sensors.imu import IMUSensor
 
 
 def build_state(
     motor_controller: MotorController,
     audio: MediaManager | None,
+    imu: IMUSensor | None = None,
     fields: list[str] | None = None,
     sensors: list[str] | None = None,
     use_pose_matrix: bool = False,
@@ -31,6 +33,7 @@ def build_state(
     Args:
         motor_controller: The motor controller instance.
         audio: Optional audio/media manager for DoA sensor.
+        imu: Optional IMU sensor.
         fields: List of field names to include, or None for all.
         sensors: List of sensor types to include (e.g. ["doa", "imu"]).
         use_pose_matrix: Whether to use matrix format for poses.
@@ -96,15 +99,10 @@ def build_state(
                     angle=doa_result[0], speech_detected=doa_result[1]
                 )
 
-        if "imu" in sensors:
-            imu_data = mc.get_imu_data() if hasattr(mc, "get_imu_data") else None
+        if "imu" in sensors and imu:
+            imu_data = imu.get_data(dt=1.0 / mc.control_frequency)
             if imu_data:
-                result["sensors"]["imu"] = IMUData(
-                    accelerometer=tuple(imu_data["accelerometer"]),
-                    gyroscope=tuple(imu_data["gyroscope"]),
-                    quaternion=tuple(imu_data["quaternion"]),
-                    temperature=imu_data.get("temperature"),
-                )
+                result["sensors"]["imu"] = imu_data
 
     result["timestamp"] = time.time()
     return FullState.model_validate(result)
