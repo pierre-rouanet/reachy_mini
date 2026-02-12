@@ -33,7 +33,11 @@ async def start_daemon(
     async def start(logger: logging.Logger) -> None:
         with busy_lock:
             await daemon.start_components()
-            if wake_up and daemon.motor_manager.ready:
+            if (
+                wake_up
+                and daemon.motor_controller is not None
+                and daemon.motor_controller.ready.is_set()
+            ):
                 await daemon.motion_manager.wake_up()
 
     job_id = bg_job_register.run_command("daemon-start", start)

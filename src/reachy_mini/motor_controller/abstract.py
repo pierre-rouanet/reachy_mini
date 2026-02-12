@@ -8,6 +8,7 @@ It is designed to be extended by subclasses that implement the specific behavior
 each type of controller.
 """
 
+import asyncio
 import logging
 import threading
 import time
@@ -132,12 +133,20 @@ class MotorController(ABC):
         self.current_body_yaw: float = 0.0
 
         # Target/current stewart platform joint positions (6 joints)
-        self.target_stewart_positions: Annotated[NDArray[np.float64], (6,)] | None = None
-        self.current_stewart_positions: Annotated[NDArray[np.float64], (6,)] | None = None
+        self.target_stewart_positions: Annotated[NDArray[np.float64], (6,)] | None = (
+            None
+        )
+        self.current_stewart_positions: Annotated[NDArray[np.float64], (6,)] | None = (
+            None
+        )
 
         # Target/current antenna joint positions (2 joints)
-        self.target_antenna_joint_positions: Annotated[NDArray[np.float64], (2,)] | None = None
-        self.current_antenna_joint_positions: Annotated[NDArray[np.float64], (2,)] | None = None
+        self.target_antenna_joint_positions: (
+            Annotated[NDArray[np.float64], (2,)] | None
+        ) = None
+        self.current_antenna_joint_positions: (
+            Annotated[NDArray[np.float64], (2,)] | None
+        ) = None
 
         self.error: str | None = None  # To store any error that occurs during execution
 
@@ -185,6 +194,46 @@ class MotorController(ABC):
         )
 
     # Life cycle methods
+
+    _thread: threading.Thread | None = None
+
+    async def try_start(self, timeout: float = 2.0) -> bool:
+        """Start the control loop in a background thread.
+
+        Returns True if the controller is ready within the timeout.
+        Never raises — errors are stored in self.error.
+        """
+
+        def _run() -> None:
+            try:
+                self.wrapped_run()
+            except Exception as e:
+                self.logger.error(f"Motor controller error: {e}")
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+        ready = await asyncio.to_thread(self.ready.wait, timeout=timeout)
+        if not ready:
+            self.error = self.error or "Motor controller not ready after timeout"
+            self.logger.error(self.error)
+        return ready
+
+    async def try_stop(self, timeout: float = 5.0) -> None:
+        """Stop the control loop and clean up resources.
+
+        Never raises — errors are logged.
+        """
+        self.is_shutting_down = True
+        self.should_stop.set()
+        if self._thread is not None:
+            await asyncio.to_thread(self._thread.join, timeout=timeout)
+            if self._thread.is_alive():
+                self.logger.warning("Motor controller thread did not stop in time.")
+            self._thread = None
+        self.close()
+        self.ready.clear()
+
     def wrapped_run(self) -> None:
         """Run the backend in a try-except block to store errors."""
         try:
@@ -212,7 +261,9 @@ class MotorController(ABC):
             self._wait_for_tick()
 
             # 2. Read current joint positions from hardware/sim
-            body_yaw, stewart_positions, antenna_positions = self._read_joint_positions()
+            body_yaw, stewart_positions, antenna_positions = (
+                self._read_joint_positions()
+            )
 
             # 3. Update kinematics model (FK)
             self.update_head_kinematics_model(body_yaw, np.array(stewart_positions))

@@ -1,7 +1,7 @@
 """Daemon for Reachy Mini robot.
 
 This module provides the main Daemon class that orchestrates all components:
-- MotorManager: Motor control lifecycle (simulation or real hardware)
+- MotorController: Motor control (simulation or real hardware)
 - HttpServer: FastAPI/uvicorn HTTP server for the REST API
 - StreamingManager: Real-time streaming (WebSocket, WebRTC data channels)
 - AppManager: User application lifecycle
@@ -15,7 +15,7 @@ import logging
 from dataclasses import asdict
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 from reachy_mini.apps.manager import AppManager
 from reachy_mini.daemon.args import DaemonArgs
@@ -25,11 +25,8 @@ from reachy_mini.daemon.streaming_manager import StreamingManager
 from reachy_mini.daemon.utils import get_ip_address
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.manager import MotionManager
-from reachy_mini.motor_controller.abstract import MotorControlMode
-from reachy_mini.motor_controller.manager import MotorManager
-
-if TYPE_CHECKING:
-    from reachy_mini.motor_controller.abstract import MotorController
+from reachy_mini.motor_controller.abstract import MotorController, MotorControlMode
+from reachy_mini.motor_controller.factory import create_motor_controller
 
 
 class DaemonState(Enum):
@@ -47,7 +44,7 @@ class Daemon:
     """Main daemon orchestrator for Reachy Mini robot.
 
     Orchestrates:
-    - MotorManager: Robot motor control
+    - MotorController: Robot motor control
     - HttpServer: FastAPI/uvicorn HTTP server
     - StreamingManager: Real-time streaming (WebSocket/WebRTC)
     - AppManager: User applications
@@ -92,11 +89,10 @@ class Daemon:
         self._simulation_enabled: Optional[bool] = None
         self._mockup_sim_enabled: Optional[bool] = None
 
+        # Motor controller (created in start_components)
+        self._motor_controller: MotorController | None = None
+
         # Create managers
-        self._motor_manager = MotorManager(
-            log_level=self._config.log_level.value,
-            wireless_version=self._config.wireless_version,
-        )
         self._audio_manager: Optional[MediaManager] = None
         self._motion_manager = MotionManager(
             log_level=self._config.log_level.value,
@@ -136,9 +132,9 @@ class Daemon:
         await self.stop()
 
     @property
-    def motor_controller(self) -> Optional["MotorController"]:
-        """Convenience access to the current motor controller."""
-        return self._motor_manager.motor_controller
+    def motor_controller(self) -> Optional[MotorController]:
+        """Get the current motor controller (None if not started)."""
+        return self._motor_controller
 
     @property
     def app_manager(self) -> AppManager:
@@ -149,11 +145,6 @@ class Daemon:
     def config(self) -> DaemonArgs:
         """Get the current configuration."""
         return self._config
-
-    @property
-    def motor_manager(self) -> MotorManager:
-        """Get the MotorManager instance."""
-        return self._motor_manager
 
     @property
     def motion_manager(self) -> MotionManager:
@@ -208,7 +199,7 @@ class Daemon:
         # 2. Start the motor controller
         motor_started = False
         try:
-            await self._motor_manager.start(
+            self._motor_controller = create_motor_controller(
                 sim=self._config.sim,
                 mockup_sim=self._config.mockup_sim,
                 serialport=self._config.serialport,
@@ -216,16 +207,21 @@ class Daemon:
                 check_collision=self._config.check_collision,
                 kinematics_engine=self._config.kinematics_engine.value,
                 headless=self._config.headless,
+                log_level=self._config.log_level.value,
+                wireless_version=self._config.wireless_version,
                 hardware_config_filepath=self._config.hardware_config_filepath,
             )
-            motor_started = True
+            motor_started = await self._motor_controller.try_start()
+            if not motor_started:
+                self._state = DaemonState.ERROR
+                self._error = self._motor_controller.error
         except Exception as e:
             self.logger.error(f"Error while starting motor controller: {e}")
             self._state = DaemonState.ERROR
             self._error = str(e)
 
         # 3. Wire up motion manager with motor controller and audio
-        self._motion_manager.set_motor_controller(self._motor_manager.motor_controller)
+        self._motion_manager.set_motor_controller(self._motor_controller)
         self._motion_manager.set_audio(self._audio_manager)
 
         # 4. Wake up if requested (only if motor controller started successfully)
@@ -316,27 +312,25 @@ class Daemon:
         self._streaming_manager.pause_webrtc()
 
         # 2. Go to sleep if requested (uses motion manager for sound)
-        if goto_sleep_on_stop and self._motor_manager.ready:
-            assert (
-                self.motor_controller is not None
-            )  # Guaranteed by _motor_manager.ready
+        mc_ready = (
+            self._motor_controller is not None and self._motor_controller.ready.is_set()
+        )
+        if goto_sleep_on_stop and mc_ready:
+            assert self._motor_controller is not None
             try:
                 self.logger.info("Putting robot to sleep...")
-                self.motor_controller.set_motor_control_mode(
-                    MotorControlMode.Enabled
-                )
+                self._motor_controller.set_motor_control_mode(MotorControlMode.Enabled)
                 await self._motion_manager.goto_sleep()
-                self.motor_controller.set_motor_control_mode(
-                    MotorControlMode.Disabled
-                )
+                self._motor_controller.set_motor_control_mode(MotorControlMode.Disabled)
             except Exception as e:
                 self.logger.error(f"Error while putting robot to sleep: {e}")
             except KeyboardInterrupt:
                 self.logger.warning("Sleep interrupted by user.")
 
         # 3. Stop the motor controller (if running)
-        if self._motor_manager.ready:
-            await self._motor_manager.stop()
+        if self._motor_controller is not None:
+            await self._motor_controller.try_stop()
+            self._motor_controller = None
 
         # 4. Stop audio manager
         if self._audio_manager is not None:
@@ -410,16 +404,13 @@ class Daemon:
             DaemonStatus: The current daemon status.
 
         """
-        motor_status = self._motor_manager.status()
-
-        if motor_status.error:
-            self._state = DaemonState.ERROR
-            self._error = motor_status.error
-
-        # Convert MotorControllerStatus dataclass to dict if present
         motor_controller_dict = None
-        if motor_status.motor_controller_status is not None:
-            motor_controller_dict = asdict(motor_status.motor_controller_status)
+        if self._motor_controller is not None:
+            mc_status = self._motor_controller.get_status()
+            motor_controller_dict = asdict(mc_status)
+            if mc_status.error:
+                self._state = DaemonState.ERROR
+                self._error = mc_status.error
 
         return DaemonStatus(
             robot_name=self._config.robot_name,

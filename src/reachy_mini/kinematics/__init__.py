@@ -12,6 +12,8 @@ except ImportError:
     class MockupNNKinematics:
         """Mockup class for NNKinematics."""
 
+        automatic_body_yaw: bool = False
+
         def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
             """Raise ImportError when trying to instantiate the class."""
             raise ImportError(
@@ -44,6 +46,8 @@ except ImportError:
 
     class MockupPlacoKinematics:
         """Mockup class for PlacoKinematics."""
+
+        automatic_body_yaw: bool = False
 
         def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
             """Raise ImportError when trying to instantiate the class."""
