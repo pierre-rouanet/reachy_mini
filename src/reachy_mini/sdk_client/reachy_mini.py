@@ -20,6 +20,7 @@ from scipy.spatial.transform import Rotation as R
 
 from reachy_mini.daemon.models import MotorControlMode
 from reachy_mini.daemon.streaming.messages import DaemonStatusEvent
+from reachy_mini.daemon.streaming.transport import ConnectionClosedError
 from reachy_mini.daemon.utils import daemon_check, is_local_camera_available
 from reachy_mini.media.media_manager import MediaBackend, MediaManager
 from reachy_mini.motion.move import Move
@@ -102,7 +103,9 @@ class ReachyMini:
         self._loop_thread: Optional[threading.Thread] = None
         self._stream_client: Optional[StreamClient] = None
         self._stop_event = threading.Event()
-        self._daemon_status: Optional[DaemonStatusEvent] = None  # Set by _initialize_client
+        self._daemon_status: Optional[DaemonStatusEvent] = (
+            None  # Set by _initialize_client
+        )
 
         self.host, self.port = self._initialize_client(host, port, timeout)
         self.set_automatic_body_rotation(automatic_body_rotation)
@@ -176,7 +179,11 @@ class ReachyMini:
             return future.result(timeout=10.0)
         except ConnectionError:
             raise ConnectionError("Lost connection with the server.")
-        except (OSError, websockets.exceptions.ConnectionClosed) as e:
+        except (
+            OSError,
+            websockets.exceptions.ConnectionClosed,
+            ConnectionClosedError,
+        ) as e:
             raise ConnectionError("Lost connection with the server.") from e
 
     @property
@@ -307,7 +314,9 @@ class ReachyMini:
         """Create and connect a StreamClient, with auto-discovery if host is None."""
         # Start background event loop
         loop_ready = threading.Event()
-        self._loop_thread = threading.Thread(target=self._start_event_loop, args=(loop_ready,), daemon=True)
+        self._loop_thread = threading.Thread(
+            target=self._start_event_loop, args=(loop_ready,), daemon=True
+        )
         self._loop_thread.start()
         loop_ready.wait()
 
@@ -517,9 +526,13 @@ class ReachyMini:
 
         # TODO this is false for the raspicam for now
         if not (0 < u < self.media_manager.camera.resolution[0]):
-            raise ValueError(f"u must be in [0, {self.media_manager.camera.resolution[0]}], got {u}.")
+            raise ValueError(
+                f"u must be in [0, {self.media_manager.camera.resolution[0]}], got {u}."
+            )
         if not (0 < v < self.media_manager.camera.resolution[1]):
-            raise ValueError(f"v must be in [0, {self.media_manager.camera.resolution[1]}], got {v}.")
+            raise ValueError(
+                f"v must be in [0, {self.media_manager.camera.resolution[1]}], got {v}."
+            )
 
         if duration < 0:
             raise ValueError("Duration can't be negative.")
@@ -704,17 +717,13 @@ class ReachyMini:
         if pose.shape != (4, 4):
             raise ValueError(f"Head pose should be a 4x4 matrix, got {pose.shape}.")
 
-        self._run_async(
-            self._client.set_target(head=pose)
-        )
+        self._run_async(self._client.set_target(head=pose))
 
     def set_target_antenna_joint_positions(self, antennas: List[float]) -> None:
         """Set the target joint positions of the antennas."""
         if len(antennas) != 2:
             raise ValueError("Antennas must have length 2.")
-        self._run_async(
-            self._client.set_target(antennas=antennas)
-        )
+        self._run_async(self._client.set_target(antennas=antennas))
 
     def set_target_body_rotation(self, body_rotation: float) -> None:
         """Set the target body rotation.
@@ -723,9 +732,7 @@ class ReachyMini:
             body_rotation (float): The rotation angle of the body in radians.
 
         """
-        self._run_async(
-            self._client.set_target(body_rotation=body_rotation)
-        )
+        self._run_async(self._client.set_target(body_rotation=body_rotation))
 
     def set_target_head_joints(self, head_joints: List[float]) -> None:
         """Set the target head joint positions (joint-space control).
@@ -744,9 +751,7 @@ class ReachyMini:
             raise ValueError(
                 f"head_joints must have 6 elements, got {len(head_joints)}"
             )
-        self._run_async(
-            self._client.set_target(head_joints=head_joints)
-        )
+        self._run_async(self._client.set_target(head_joints=head_joints))
 
     def get_current_head_joints(self) -> List[float]:
         """Get the current head joint positions (stewart platform).
@@ -819,9 +824,7 @@ class ReachyMini:
 
     def enable_gravity_compensation(self) -> None:
         """Enable gravity compensation for the head motors."""
-        self._run_async(
-            self._client.set_mode(MotorControlMode.GravityCompensation)
-        )
+        self._run_async(self._client.set_mode(MotorControlMode.GravityCompensation))
 
     def disable_gravity_compensation(self) -> None:
         """Disable gravity compensation for the head motors."""

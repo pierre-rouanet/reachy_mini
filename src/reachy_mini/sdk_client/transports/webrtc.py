@@ -4,7 +4,7 @@ Uses GStreamer's webrtcsrc to connect to the daemon's signalling server.
 The data channel carries the same streaming protocol messages as WebSocket.
 
 GStreamer signals fire on the GLib main loop thread, so this transport
-bridges them to the asyncio event loop via call_soon_threadsafe.
+uses an asyncio queue to pass messages to the asyncio event loop.
 """
 
 from __future__ import annotations
@@ -16,12 +16,9 @@ from typing import Any, Optional
 
 import gi
 
+from reachy_mini.daemon.streaming.transport import ConnectionClosedError
 from reachy_mini.media.webrtc_utils import find_producer_peer_id_by_name
-from reachy_mini.sdk_client.transport import (
-    ClientTransport,
-    CloseCallback,
-    MessageCallback,
-)
+from reachy_mini.sdk_client.transport import ClientTransport
 
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
@@ -64,8 +61,7 @@ class WebRTCClientTransport(ClientTransport):
         self._connected = False
         self._channel_open = Event()
 
-        self._message_callback: Optional[MessageCallback] = None
-        self._close_callback: Optional[CloseCallback] = None
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
 
     @property
     def uri(self) -> str:
@@ -150,6 +146,7 @@ class WebRTCClientTransport(ClientTransport):
     async def disconnect(self) -> None:
         """Disconnect from the WebRTC peer."""
         self._connected = False
+        self._queue.put_nowait(None)
         self._stop_pipeline()
 
     def _stop_pipeline(self) -> None:
@@ -165,41 +162,22 @@ class WebRTCClientTransport(ClientTransport):
         self._data_channel = None
 
     async def send(self, message: str) -> None:
-        """Send a message over the data channel.
-
-        Args:
-            message: The JSON message to send.
-
-        Raises:
-            ConnectionError: If not connected.
-
-        """
+        """Send a message over the data channel."""
         if not self._connected or self._data_channel is None:
-            raise ConnectionError("Data channel not connected")
+            raise ConnectionClosedError("Data channel not connected")
 
         try:
             self._data_channel.emit("send-string", message)
         except Exception as e:
             self._connected = False
-            raise ConnectionError(f"Failed to send: {e}") from e
+            raise ConnectionClosedError(f"Failed to send: {e}") from e
 
-    def on_message(self, callback: MessageCallback) -> None:
-        """Register callback for incoming messages.
-
-        Args:
-            callback: Async function to handle messages.
-
-        """
-        self._message_callback = callback
-
-    def on_close(self, callback: CloseCallback) -> None:
-        """Register callback for connection close.
-
-        Args:
-            callback: Async function to call when connection closes.
-
-        """
-        self._close_callback = callback
+    async def receive(self) -> str:
+        """Receive the next message from the data channel."""
+        message = await self._queue.get()
+        if message is None:
+            raise ConnectionClosedError("Data channel closed")
+        return message
 
     # --- GStreamer signal handlers (called from GLib thread) ---
 
@@ -240,15 +218,13 @@ class WebRTCClientTransport(ClientTransport):
         self._connected = False
         self._data_channel = None
 
-        if self._close_callback is not None and self._loop is not None:
-            asyncio.run_coroutine_threadsafe(self._close_callback(), self._loop)
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
 
     def _on_channel_message(self, _channel: Any, message: str) -> None:
         """Handle incoming data channel message."""
-        if self._message_callback is not None and self._loop is not None:
-            asyncio.run_coroutine_threadsafe(
-                self._message_callback(message), self._loop
-            )
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, message)
 
     def _on_channel_error(self, _channel: Any, error: str) -> None:
         """Handle data channel error."""

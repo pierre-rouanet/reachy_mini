@@ -6,13 +6,9 @@ for connection establishment (connect/disconnect).
 
 from abc import abstractmethod
 
-from reachy_mini.daemon.streaming.transport import (
-    CloseCallback,
-    MessageCallback,
-    StreamingTransport,
-)
+from reachy_mini.daemon.streaming.transport import StreamingTransport
 
-__all__ = ["ClientTransport", "MessageCallback", "CloseCallback"]
+__all__ = ["ClientTransport"]
 
 
 class ClientTransport(StreamingTransport):

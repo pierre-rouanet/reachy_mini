@@ -221,6 +221,6 @@ class StreamingManager:
         """
         transport = self._webrtc_transports.get(peer_id)
         if transport is not None:
-            transport.receive(message)
+            transport.enqueue(message)
         else:
             self.logger.debug(f"No transport for peer {peer_id}, ignoring message")

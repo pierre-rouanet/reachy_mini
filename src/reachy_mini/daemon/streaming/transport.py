@@ -6,11 +6,10 @@ Used by both server (daemon) and client (SDK) implementations.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Coroutine
 
-# Type aliases for callbacks
-MessageCallback = Callable[[str], Coroutine[Any, Any, None]]
-CloseCallback = Callable[[], Coroutine[Any, Any, None]]
+
+class ConnectionClosedError(Exception):
+    """Raised when a receive is attempted on a closed connection."""
 
 
 class StreamingTransport(ABC):
@@ -30,28 +29,21 @@ class StreamingTransport(ABC):
             message: JSON-encoded message string.
 
         Raises:
-            ConnectionError: If the connection is closed.
+            ConnectionClosedError: If the connection is closed.
 
         """
 
     @abstractmethod
-    def on_message(self, callback: MessageCallback) -> None:
-        """Register callback for incoming messages.
+    async def receive(self) -> str:
+        """Receive the next JSON message.
 
-        The callback will be invoked for each incoming message.
-        Only one callback can be registered at a time.
+        Blocks until a message is available.
 
-        Args:
-            callback: Async function that receives the raw message string.
+        Returns:
+            The raw JSON message string.
 
-        """
-
-    @abstractmethod
-    def on_close(self, callback: CloseCallback) -> None:
-        """Register callback for connection close.
-
-        Args:
-            callback: Async function called when connection closes.
+        Raises:
+            ConnectionClosedError: If the connection is closed.
 
         """
 
@@ -65,4 +57,4 @@ class StreamingTransport(ABC):
         """Check if the transport is still connected."""
 
 
-__all__ = ["StreamingTransport", "MessageCallback", "CloseCallback"]
+__all__ = ["StreamingTransport", "ConnectionClosedError"]

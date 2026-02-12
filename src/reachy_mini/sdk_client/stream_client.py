@@ -45,6 +45,7 @@ from reachy_mini.daemon.streaming.messages import (
     TargetCommand,
     parse_outbound_message,
 )
+from reachy_mini.daemon.streaming.transport import ConnectionClosedError
 from reachy_mini.motion import MoveId, MoveStatus
 from reachy_mini.sdk_client.transport import ClientTransport
 from reachy_mini.utils.interpolation import InterpolationTechnique
@@ -100,6 +101,7 @@ class StreamClient:
             transport = WebSocketClientTransport(host=host, port=port)
 
         self._transport = transport
+        self._receive_task: asyncio.Task[None] | None = None
 
         self._state_queue: asyncio.Queue[FullState] = asyncio.Queue()
         self._event_handlers: dict[str, asyncio.Queue[OutboundMessage]] = {}
@@ -121,13 +123,18 @@ class StreamClient:
 
         """
         await self._transport.connect(timeout=timeout)
-        self._transport.on_message(self._on_message)
-        self._transport.on_close(self._on_close)
+        self._receive_task = asyncio.create_task(self._receive_loop())
         self.logger.info("Connected to streaming endpoint at %s", self.uri)
 
     async def disconnect(self) -> None:
         """Disconnect from the daemon."""
         await self._transport.disconnect()
+        if self._receive_task:
+            try:
+                await self._receive_task
+            except Exception:
+                pass
+            self._receive_task = None
 
     async def __aenter__(self) -> "StreamClient":
         """Async context manager entry."""
@@ -146,6 +153,17 @@ class StreamClient:
     async def _send_cmd(self, cmd: BaseModel) -> None:
         """Send a command to the server."""
         await self._transport.send(cmd.model_dump_json())
+
+    async def _receive_loop(self) -> None:
+        """Receive messages from transport and dispatch them."""
+        try:
+            while True:
+                raw = await self._transport.receive()
+                await self._on_message(raw)
+        except (ConnectionClosedError, asyncio.CancelledError):
+            pass
+        except Exception as e:
+            self.logger.warning("Receive loop ended: %s", e)
 
     async def _on_message(self, message: str) -> None:
         """Handle incoming message from transport."""
@@ -176,10 +194,6 @@ class StreamClient:
 
         except Exception as e:
             self.logger.warning("Error processing event: %s", e)
-
-    async def _on_close(self) -> None:
-        """Handle transport close."""
-        self.logger.debug("Transport connection closed")
 
     async def _request(
         self, cmd: BaseModel, event_type: str, timeout: float = 5.0
@@ -231,7 +245,9 @@ class StreamClient:
             frequency: Update frequency in Hz (max 100).
 
         """
-        await self._send_cmd(SubscribeCommand(fields=fields, sensors=sensors, frequency=frequency))
+        await self._send_cmd(
+            SubscribeCommand(fields=fields, sensors=sensors, frequency=frequency)
+        )
 
     async def set_mode(self, mode: MotorControlMode) -> None:
         """Set motor control mode.

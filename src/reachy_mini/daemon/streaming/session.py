@@ -22,7 +22,10 @@ from reachy_mini.daemon.streaming.messages import (
     SubscribeCommand,
     parse_inbound_message,
 )
-from reachy_mini.daemon.streaming.transport import StreamingTransport
+from reachy_mini.daemon.streaming.transport import (
+    ConnectionClosedError,
+    StreamingTransport,
+)
 from reachy_mini.motion import MoveId
 
 if TYPE_CHECKING:
@@ -72,7 +75,6 @@ class StreamingSession:
         # Session state
         self._running = False
         self._closed = False
-        self._close_event = asyncio.Event()
 
     @property
     def transport(self) -> StreamingTransport:
@@ -87,18 +89,18 @@ class StreamingSession:
     async def run(self) -> None:
         """Run the session until the connection closes.
 
-        This sets up the message callback and waits for the connection to close.
+        Receives messages from the transport and dispatches them to the handler.
         """
         if self._running:
             raise RuntimeError("Session is already running")
 
         self._running = True
-        self._transport.on_message(self._on_message)
-        self._transport.on_close(self._on_close)
-
         try:
-            # Wait until transport signals close
-            await self._close_event.wait()
+            while True:
+                raw = await self._transport.receive()
+                await self._on_message(raw)
+        except (ConnectionClosedError, asyncio.CancelledError):
+            pass
         finally:
             await self._cleanup()
 
@@ -201,11 +203,6 @@ class StreamingSession:
             await self.send_event(
                 ErrorEvent(message=f"Internal error: {e}", code="INTERNAL_ERROR")
             )
-
-    async def _on_close(self) -> None:
-        """Handle transport close."""
-        self._closed = True
-        self._close_event.set()
 
     async def _state_stream_loop(self) -> None:
         """Stream state events at configured frequency."""
