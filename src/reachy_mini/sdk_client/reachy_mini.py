@@ -10,7 +10,8 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Any, Coroutine, Dict, List, Optional, TypeVar, Union
+import warnings
+from typing import Any, Coroutine, Dict, List, Literal, Optional, TypeVar, Union
 
 import cv2
 import numpy as np
@@ -28,6 +29,7 @@ from reachy_mini.sdk_client.stream_client import StreamClient
 from reachy_mini.utils.interpolation import InterpolationTechnique
 
 T = TypeVar("T")
+ConnectionMode = Literal["auto", "localhost_only", "network"]
 
 # Behavior definitions
 INIT_HEAD_POSE = np.eye(4)
@@ -72,7 +74,11 @@ class ReachyMini:
         timeout: float = 5.0,
         log_level: str = "INFO",
         media_backend: str = "default",
-        automatic_body_rotation: bool = True,
+        automatic_body_yaw: bool = True,
+        # Deprecated params (kept for backward compatibility)
+        robot_name: Optional[str] = None,
+        connection_mode: Optional[ConnectionMode] = None,
+        localhost_only: Optional[bool] = None,
     ) -> None:
         """Initialize the Reachy Mini robot.
 
@@ -87,8 +93,11 @@ class ReachyMini:
             media_backend (str): Use "no_media" to disable media entirely. Any other value
                 triggers auto-detection: Lite uses OpenCV, Wireless uses GStreamer (local)
                 or WebRTC (remote) based on environment.
-            automatic_body_rotation (bool): If True, the body rotation is automatically computed
+            automatic_body_yaw (bool): If True, the body yaw is automatically computed
                 during IK to stay within mechanical limits. Defaults to True.
+            robot_name: Deprecated, ignored.
+            connection_mode: Deprecated. Use host parameter instead.
+            localhost_only: Deprecated. Use host parameter instead.
 
         Raises:
             ConnectionError: If unable to connect to the daemon.
@@ -96,6 +105,26 @@ class ReachyMini:
         """
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(log_level)
+
+        # Handle deprecated params
+        if robot_name is not None:
+            warnings.warn(
+                "robot_name is deprecated and ignored. Use host instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if connection_mode is not None or localhost_only is not None:
+            warnings.warn(
+                "connection_mode/localhost_only are deprecated. Use host instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if host is None:
+                if connection_mode == "localhost_only" or localhost_only is True:
+                    host = "localhost"
+                elif connection_mode == "network" or localhost_only is False:
+                    host = "reachy-mini.local"
+
         daemon_check(spawn_daemon, use_sim)
 
         # Background event loop for async StreamClient
@@ -108,7 +137,7 @@ class ReachyMini:
         )
 
         self.host, self.port = self._initialize_client(host, port, timeout)
-        self.set_automatic_body_rotation(automatic_body_rotation)
+        self.set_automatic_body_yaw(automatic_body_yaw)
         self.is_recording = False
 
         self.T_head_cam = np.eye(4)
@@ -373,22 +402,22 @@ class ReachyMini:
         antennas: Optional[
             Union[npt.NDArray[np.float64], List[float]]
         ] = None,  # [right_angle, left_angle] (in rads)
-        body_rotation: Optional[float] = None,  # Body rotation angle in radians
+        body_yaw: Optional[float] = None,  # Body yaw angle in radians
     ) -> None:
         """Set the target pose of the head and/or the target position of the antennas.
 
         Args:
             head (Optional[np.ndarray]): 4x4 pose matrix representing the head pose.
             antennas (Optional[Union[np.ndarray, List[float]]]): 1D array with two elements representing the angles of the antennas in radians.
-            body_rotation (Optional[float]): Body rotation angle in radians.
+            body_yaw (Optional[float]): Body yaw angle in radians.
 
         Raises:
             ValueError: If neither head nor antennas are provided, or if the shape of head is not (4, 4), or if antennas is not a 1D array with two elements.
 
         """
-        if head is None and antennas is None and body_rotation is None:
+        if head is None and antennas is None and body_yaw is None:
             raise ValueError(
-                "At least one of head, antennas or body_rotation must be provided."
+                "At least one of head, antennas or body_yaw must be provided."
             )
 
         if head is not None and not head.shape == (4, 4):
@@ -399,8 +428,8 @@ class ReachyMini:
                 "Antennas must be a list or 1D np array with two elements."
             )
 
-        if body_rotation is not None and not isinstance(body_rotation, (int, float)):
-            raise ValueError("body_rotation must be a float.")
+        if body_yaw is not None and not isinstance(body_yaw, (int, float)):
+            raise ValueError("body_yaw must be a float.")
 
         if head is not None:
             self.set_target_head_pose(head)
@@ -408,8 +437,8 @@ class ReachyMini:
         if antennas is not None:
             self.set_target_antenna_joint_positions(list(antennas))
 
-        if body_rotation is not None:
-            self.set_target_body_rotation(body_rotation)
+        if body_yaw is not None:
+            self.set_target_body_yaw(body_yaw)
 
     def goto_target(
         self,
@@ -419,7 +448,7 @@ class ReachyMini:
         ] = None,  # [right_angle, left_angle] (in rads)
         duration: float = 0.5,  # Duration in seconds for the movement, default is 0.5 seconds.
         method: InterpolationTechnique = InterpolationTechnique.MIN_JERK,  # can be "linear", "minjerk", "ease" or "cartoon", default is "minjerk")
-        body_rotation: float | None = 0.0,  # Body rotation angle in radians
+        body_yaw: float | None = None,  # Body yaw angle in radians
     ) -> None:
         """Go to a target head pose and/or antennas position using task space interpolation, in "duration" seconds.
 
@@ -428,15 +457,15 @@ class ReachyMini:
             antennas (Optional[Union[np.ndarray, List[float]]]): 1D array with two elements representing the angles of the antennas in radians.
             duration (float): Duration of the movement in seconds.
             method (InterpolationTechnique): Interpolation method to use ("linear", "minjerk", "ease", "cartoon"). Default is "minjerk".
-            body_rotation (float | None): Body rotation angle in radians. Use None to keep the current rotation.
+            body_yaw (float | None): Body yaw angle in radians. Use None to keep the current yaw.
 
         Raises:
             ValueError: If neither head nor antennas are provided, or if duration is not positive.
 
         """
-        if head is None and antennas is None and body_rotation is None:
+        if head is None and antennas is None and body_yaw is None:
             raise ValueError(
-                "At least one of head, antennas or body_rotation must be provided."
+                "At least one of head, antennas or body_yaw must be provided."
             )
 
         if duration <= 0.0:
@@ -449,7 +478,7 @@ class ReachyMini:
             self._client.goto(
                 head=head,
                 antennas=antennas,
-                body_rotation=body_rotation,
+                body_rotation=body_yaw,
                 duration=duration,
                 interpolation=method,
             )
@@ -651,7 +680,7 @@ class ReachyMini:
                 - List of antennas joint positions (rad) (length 2).
 
         Note:
-            Body rotation is accessed separately via get_current_body_rotation().
+            Body yaw is accessed separately via get_current_body_yaw().
 
         """
         s = self._run_async(self._client.get_state())
@@ -672,18 +701,18 @@ class ReachyMini:
         """
         return self.get_current_joint_positions()[1]
 
-    def get_current_body_rotation(self) -> float:
-        """Get the current body rotation angle.
+    def get_current_body_yaw(self) -> float:
+        """Get the current body yaw angle.
 
         Returns:
-            float: Body rotation angle in radians.
+            float: Body yaw angle in radians.
 
         """
         state = self._run_async(self._client.get_state())
         if state is None:
             raise RuntimeError("Could not get state from daemon.")
         if state.body_rotation is None:
-            raise RuntimeError("Body rotation data is None.")
+            raise RuntimeError("Body yaw data is None.")
         return float(state.body_rotation)
 
     def get_current_head_pose(self) -> npt.NDArray[np.float64]:
@@ -725,14 +754,14 @@ class ReachyMini:
             raise ValueError("Antennas must have length 2.")
         self._run_async(self._client.set_target(antennas=antennas))
 
-    def set_target_body_rotation(self, body_rotation: float) -> None:
-        """Set the target body rotation.
+    def set_target_body_yaw(self, body_yaw: float) -> None:
+        """Set the target body yaw.
 
         Args:
-            body_rotation (float): The rotation angle of the body in radians.
+            body_yaw (float): The yaw angle of the body in radians.
 
         """
-        self._run_async(self._client.set_target(body_rotation=body_rotation))
+        self._run_async(self._client.set_target(body_rotation=body_yaw))
 
     def set_target_head_joints(self, head_joints: List[float]) -> None:
         """Set the target head joint positions (joint-space control).
@@ -830,14 +859,14 @@ class ReachyMini:
         """Disable gravity compensation for the head motors."""
         self._run_async(self._client.set_mode(MotorControlMode.Enabled))
 
-    def set_automatic_body_rotation(self, enabled: bool) -> None:
-        """Set the automatic body rotation.
+    def set_automatic_body_yaw(self, enabled: bool) -> None:
+        """Set the automatic body yaw.
 
-        When enabled, the body rotation is automatically computed during IK
+        When enabled, the body yaw is automatically computed during IK
         to stay within mechanical limits.
 
         Args:
-            enabled (bool): Whether to enable automatic body rotation.
+            enabled (bool): Whether to enable automatic body yaw.
 
         """
         self._run_async(self._client.set_automatic_body_rotation(enabled))
@@ -859,14 +888,14 @@ class ReachyMini:
 
         """
         if initial_goto_duration > 0.0:
-            start_head_pose, start_antennas_positions, start_body_rotation = (
-                move.evaluate(0.0)
+            start_head_pose, start_antennas_positions, start_body_yaw = move.evaluate(
+                0.0
             )
             self.goto_target(
                 head=start_head_pose,
                 antennas=start_antennas_positions,
                 duration=initial_goto_duration,
-                body_rotation=start_body_rotation,
+                body_yaw=start_body_yaw,
             )
 
         sleep_period = 1.0 / play_frequency
@@ -878,11 +907,11 @@ class ReachyMini:
         while time.time() - t0 < move.duration:
             t = min(time.time() - t0, move.duration - 1e-2)
 
-            head, antennas, body_rotation = move.evaluate(t)
+            head, antennas, body_yaw = move.evaluate(t)
             if head is not None:
                 self.set_target_head_pose(head)
-            if body_rotation is not None:
-                self.set_target_body_rotation(body_rotation)
+            if body_yaw is not None:
+                self.set_target_body_yaw(body_yaw)
             if antennas is not None:
                 self.set_target_antenna_joint_positions(list(antennas))
 
