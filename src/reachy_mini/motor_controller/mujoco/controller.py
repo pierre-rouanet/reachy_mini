@@ -63,7 +63,6 @@ class MujocoController(MotorController):
 
         from reachy_mini.sdk_client.reachy_mini import (
             SLEEP_ANTENNAS_JOINT_POSITIONS,
-            SLEEP_HEAD_JOINT_POSITIONS,
         )
 
         # Real robot convention for the order of the antennas joints is [right, left], but in mujoco it's [left, right]
@@ -71,9 +70,8 @@ class MujocoController(MotorController):
             SLEEP_ANTENNAS_JOINT_POSITIONS[1],
             SLEEP_ANTENNAS_JOINT_POSITIONS[0],
         ]
-        # MuJoCo model has body_yaw as first actuator, SDK positions don't include it
-        # Prepend body_yaw=0 to match the 9 actuators: yaw_body + 6 stewart + 2 antennas
-        self._SLEEP_HEAD_JOINT_POSITIONS = [0.0] + list(SLEEP_HEAD_JOINT_POSITIONS)
+        self._SLEEP_BODY_YAW = self.SLEEP_BODY_YAW
+        self._SLEEP_STEWART_POSITIONS = list(self.SLEEP_STEWART_POSITIONS)
 
         mjcf_root_path = str(
             files(reachy_mini).joinpath("descriptions/reachy_mini/mjcf/")
@@ -169,13 +167,10 @@ class MujocoController(MotorController):
                 mujoco.mj_step(self.model, self.data)
                 self._viewer.sync()
 
-        # Set initial positions
-        self.data.qpos[self.joint_qpos_addr] = np.array(
-            self._SLEEP_HEAD_JOINT_POSITIONS + self._SLEEP_ANTENNAS_JOINT_POSITIONS
-        ).reshape(-1, 1)
-        self.data.ctrl[:] = np.array(
-            self._SLEEP_HEAD_JOINT_POSITIONS + self._SLEEP_ANTENNAS_JOINT_POSITIONS
-        )
+        # Set initial positions: [body_yaw, stewart_1..6, antenna_left, antenna_right]
+        sleep_all = [self._SLEEP_BODY_YAW] + self._SLEEP_STEWART_POSITIONS + self._SLEEP_ANTENNAS_JOINT_POSITIONS
+        self.data.qpos[self.joint_qpos_addr] = np.array(sleep_all).reshape(-1, 1)
+        self.data.ctrl[:] = np.array(sleep_all)
 
         # Initialize simulation
         mujoco.mj_forward(self.model, self.data)
@@ -199,15 +194,19 @@ class MujocoController(MotorController):
             self._rendering_thread.start()
 
         # Initialize kinematics state
+        from reachy_mini.motor_controller.abstract import pack_joints
+
         self.head_kinematics.ik(self._get_mj_head_pose(), no_iterations=20)
-        head_pos, _ = self._read_joint_positions()
-        self.head_kinematics.fk(head_pos, no_iterations=20)
+        body_yaw, stewart, _ = self._read_joint_positions()
+        self.head_kinematics.fk(pack_joints(body_yaw, stewart), no_iterations=20)
 
     def _on_update(self) -> None:
         """Step physics simulation and sync viewer."""
         # Apply controls and step simulation
-        if self.target_head_joint_positions is not None:
-            self.data.ctrl[:7] = self.target_head_joint_positions
+        if self.target_body_yaw is not None:
+            self.data.ctrl[0] = self.target_body_yaw
+        if self.target_stewart_positions is not None:
+            self.data.ctrl[1:7] = self.target_stewart_positions
         if self.target_antenna_joint_positions is not None:
             self.data.ctrl[-2:] = -self.target_antenna_joint_positions
 
@@ -230,15 +229,13 @@ class MujocoController(MotorController):
 
     def _read_joint_positions(
         self,
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    ) -> tuple[float, npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Read joint positions from MuJoCo simulation."""
-        head_pos: npt.NDArray[np.float64] = self.data.qpos[
-            self.joint_qpos_addr[:7]
-        ].flatten()
-        antenna_pos: npt.NDArray[np.float64] = -self.data.qpos[
-            self.joint_qpos_addr[-2:]
-        ].flatten()
-        return head_pos, antenna_pos
+        qpos = self.data.qpos[self.joint_qpos_addr].flatten()
+        body_yaw = float(qpos[0])
+        stewart_pos: npt.NDArray[np.float64] = qpos[1:7]
+        antenna_pos: npt.NDArray[np.float64] = -qpos[-2:]
+        return body_yaw, stewart_pos, antenna_pos
 
     def _apply_targets(self) -> None:
         """Targets are applied in _on_update along with physics step."""

@@ -152,13 +152,7 @@ async def set_target(
     if target.head_pose is not None:
         motor_controller.set_target_head_pose(target.head_pose.to_pose_array())
     elif target.head_joints is not None:
-        # API uses 6 stewart joints; motor controller expects 7 (body_yaw + stewart)
-        # Prepend current body_yaw to the stewart joints
-        body_yaw = (
-            motor_controller.target_body_yaw or motor_controller.get_present_body_yaw()
-        )
-        full_joints = np.concatenate([[body_yaw], target.head_joints])
-        motor_controller.set_target_head_joint_positions(full_joints)
+        motor_controller.set_target_stewart_positions(np.array(target.head_joints))
 
     if target.antennas is not None:
         motor_controller.set_target_antenna_joint_positions(np.array(target.antennas))

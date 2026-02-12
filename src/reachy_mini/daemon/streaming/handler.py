@@ -152,10 +152,7 @@ class ProtocolHandler:
         if target.head_pose is not None:
             mc.set_target_head_pose(target.head_pose.to_pose_array())
         elif target.head_joints is not None:
-            # API uses 6 stewart joints; motor controller expects 7 (body_yaw + stewart)
-            body_yaw = mc.target_body_yaw or mc.get_present_body_yaw()
-            full_joints = np.concatenate([[body_yaw], target.head_joints])
-            mc.set_target_head_joint_positions(full_joints)
+            mc.set_target_stewart_positions(np.array(target.head_joints))
 
         if target.antennas is not None:
             mc.set_target_antenna_joint_positions(np.array(target.antennas))

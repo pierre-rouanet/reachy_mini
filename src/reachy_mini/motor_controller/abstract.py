@@ -127,22 +127,17 @@ class MotorController(ABC):
         self.target_head_pose: Annotated[NDArray[np.float64], (4, 4)] | None = (
             None  # 4x4 pose matrix
         )
-        self.target_body_yaw: float | None = (
-            None  # Last body yaw used in IK computations
-        )
+        # Target/current body yaw (separate from stewart platform joints)
+        self.target_body_yaw: float | None = None
+        self.current_body_yaw: float = 0.0
 
-        self.target_head_joint_positions: (
-            Annotated[NDArray[np.float64], (7,)] | None
-        ) = None  # [yaw, 0, 1, 2, 3, 4, 5]
-        self.current_head_joint_positions: (
-            Annotated[NDArray[np.float64], (7,)] | None
-        ) = None  # [yaw, 0, 1, 2, 3, 4, 5]
-        self.target_antenna_joint_positions: (
-            Annotated[NDArray[np.float64], (2,)] | None
-        ) = None  # [0, 1]
-        self.current_antenna_joint_positions: (
-            Annotated[NDArray[np.float64], (2,)] | None
-        ) = None  # [0, 1]
+        # Target/current stewart platform joint positions (6 joints)
+        self.target_stewart_positions: Annotated[NDArray[np.float64], (6,)] | None = None
+        self.current_stewart_positions: Annotated[NDArray[np.float64], (6,)] | None = None
+
+        # Target/current antenna joint positions (2 joints)
+        self.target_antenna_joint_positions: Annotated[NDArray[np.float64], (2,)] | None = None
+        self.current_antenna_joint_positions: Annotated[NDArray[np.float64], (2,)] | None = None
 
         self.error: str | None = None  # To store any error that occurs during execution
 
@@ -153,9 +148,7 @@ class MotorController(ABC):
         self._last_target_head_pose: Annotated[NDArray[np.float64], (4, 4)] | None = (
             None  # Last head pose used in IK computations
         )
-        self.target_head_joint_current: Annotated[NDArray[np.float64], (7,)] | None = (
-            None  # Placeholder for head joint torque
-        )
+        self.target_stewart_current: Annotated[NDArray[np.float64], (6,)] | None = None
         self.ik_required = False  # Flag to indicate if IK computation is required
 
         self.is_shutting_down = False
@@ -219,13 +212,11 @@ class MotorController(ABC):
             self._wait_for_tick()
 
             # 2. Read current joint positions from hardware/sim
-            head_positions, antenna_positions = self._read_joint_positions()
+            body_yaw, stewart_positions, antenna_positions = self._read_joint_positions()
 
             # 3. Update kinematics model (FK)
-            self.update_head_kinematics_model(
-                np.array(head_positions),
-                np.array(antenna_positions),
-            )
+            self.update_head_kinematics_model(body_yaw, np.array(stewart_positions))
+            self.current_antenna_joint_positions = np.array(antenna_positions)
 
             # 4. Update IK if needed
             self._update_ik_if_needed()
@@ -266,11 +257,11 @@ class MotorController(ABC):
     @abstractmethod
     def _read_joint_positions(
         self,
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    ) -> tuple[float, NDArray[np.float64], NDArray[np.float64]]:
         """Read current joint positions from hardware/simulation.
 
         Returns:
-            Tuple of (head_joint_positions, antenna_joint_positions) as numpy arrays.
+            Tuple of (body_yaw, stewart_positions, antenna_positions).
 
         """
         pass
@@ -407,7 +398,7 @@ class MotorController(ABC):
         self._last_target_head_pose = pose
         self._last_target_body_yaw = body_yaw
 
-        self.target_head_joint_positions = joints
+        self.target_body_yaw, self.target_stewart_positions = unpack_joints(joints)
 
     def set_target_head_pose(
         self,
@@ -434,16 +425,16 @@ class MotorController(ABC):
         self.target_body_yaw = body_yaw
         self.ik_required = True  # Do we need that here?
 
-    def set_target_head_joint_positions(
-        self, positions: Annotated[NDArray[np.float64], (7,)] | None
+    def set_target_stewart_positions(
+        self, positions: Annotated[NDArray[np.float64], (6,)]
     ) -> None:
-        """Set the head joint positions.
+        """Set the stewart platform joint positions (6 joints).
 
         Args:
-            positions (List[float]): A list of joint positions for the head.
+            positions: Array of 6 stewart platform joint positions in radians.
 
         """
-        self.target_head_joint_positions = positions
+        self.target_stewart_positions = positions
         self.ik_required = False
 
     def set_target(
@@ -475,31 +466,29 @@ class MotorController(ABC):
         """
         self.target_antenna_joint_positions = positions
 
-    def set_target_head_joint_current(
+    def set_target_stewart_current(
         self,
-        current: Annotated[NDArray[np.float64], (7,)],
+        current: Annotated[NDArray[np.float64], (6,)],
     ) -> None:
-        """Set the head joint current.
+        """Set the stewart platform joint current (for gravity compensation).
 
         Args:
-            current (Annotated[NDArray[np.float64], (7,)]): A list of current values for the head motors.
+            current: Array of 6 current values for the stewart platform motors.
 
         """
-        self.target_head_joint_current = current
+        self.target_stewart_current = current
         self.ik_required = False
 
-    def get_present_head_joint_positions(self) -> Annotated[NDArray[np.float64], (7,)]:
-        """Return the present head joint positions."""
-        if self.current_head_joint_positions is None:
-            # Fall back to reading directly if not yet set
-            head_pos, _ = self._read_joint_positions()
-            return np.array(head_pos)
-        return self.current_head_joint_positions
+    def get_present_stewart_positions(self) -> Annotated[NDArray[np.float64], (6,)]:
+        """Return the present stewart platform joint positions (6 joints)."""
+        assert self.current_stewart_positions is not None, (
+            "Stewart positions not set. Is the control loop running?"
+        )
+        return self.current_stewart_positions
 
     def get_present_body_yaw(self) -> float:
         """Return the present body yaw."""
-        yaw: float = self.get_present_head_joint_positions()[0]
-        return yaw
+        return self.current_body_yaw
 
     def get_present_head_pose(self) -> Annotated[NDArray[np.float64], (4, 4)]:
         """Return the present head pose as a 4x4 matrix."""
@@ -516,55 +505,48 @@ class MotorController(ABC):
         self,
     ) -> Annotated[NDArray[np.float64], (2,)]:
         """Return the present antenna joint positions."""
-        if self.current_antenna_joint_positions is None:
-            # Fall back to reading directly if not yet set
-            _, antenna_pos = self._read_joint_positions()
-            return np.array(antenna_pos)
+        assert self.current_antenna_joint_positions is not None, (
+            "Antenna positions not set. Is the control loop running?"
+        )
         return self.current_antenna_joint_positions
 
     # Kinematics methods
     def update_head_kinematics_model(
         self,
-        head_joint_positions: Annotated[NDArray[np.float64], (7,)] | None = None,
-        antennas_joint_positions: Annotated[NDArray[np.float64], (2,)] | None = None,
+        body_yaw: float | None = None,
+        stewart_positions: Annotated[NDArray[np.float64], (6,)] | None = None,
     ) -> None:
-        """Update the placo kinematics of the robot.
+        """Update the head kinematics model (forward kinematics).
+
+        Computes FK from the given joints and updates current_head_pose,
+        current_body_yaw, and current_stewart_positions.
+
+        If not provided, falls back to the stored current values.
 
         Args:
-            head_joint_positions (List[float] | None): The joint positions of the head.
-            antennas_joint_positions (List[float] | None): The joint positions of the antennas.
-
-        Returns:
-            None: This method does not return anything.
-
-        This method updates the head kinematics model with the given joint positions.
-        - If the joint positions are not provided, it will use the current joint positions.
-        - If the head joint positions have not changed, it will return without recomputing the forward kinematics.
-        - If the head joint positions have changed, it will compute the forward kinematics to get the current head pose.
-        - If the forward kinematics fails, it will raise an assertion error.
-        - If the antennas joint positions are provided, it will update the current antenna joint positions.
-
-        Note:
-            This method will update the `current_head_pose` and `current_head_joint_positions`
-            attributes of the backend instance with the computed values. And the `current_antenna_joint_positions` if provided.
+            body_yaw: Body yaw angle in radians.
+            stewart_positions: 6 stewart platform joint positions in radians.
 
         """
-        if head_joint_positions is None:
-            head_joint_positions = self.get_present_head_joint_positions()
+        if body_yaw is None:
+            body_yaw = self.current_body_yaw
+        if stewart_positions is None:
+            stewart_positions = self.get_present_stewart_positions()
+
+        # Pack for FK (kinematics expects 7-elem array)
+        joints_7 = pack_joints(body_yaw, stewart_positions)
 
         # Compute the forward kinematics to get the current head pose
-        self.current_head_pose = self.head_kinematics.fk(head_joint_positions)
+        self.current_head_pose = self.head_kinematics.fk(joints_7)
 
         # Check if the FK was successful
         assert self.current_head_pose is not None, (
             "FK failed to compute the current head pose."
         )
 
-        # Store the last head joint positions
-        self.current_head_joint_positions = head_joint_positions
-
-        if antennas_joint_positions is not None:
-            self.current_antenna_joint_positions = antennas_joint_positions
+        # Store the current joint positions
+        self.current_body_yaw = body_yaw
+        self.current_stewart_positions = stewart_positions
 
     def set_automatic_body_yaw(self, body_yaw: bool) -> None:
         """Set the automatic body yaw.
@@ -585,13 +567,8 @@ class MotorController(ABC):
     # Basic move definitions
     INIT_HEAD_POSE = np.eye(4)
 
-    # TODO: Separate body_rotation from head_joint_positions and make naming clearer.
-    #  Currently index 0 is body_yaw and indices 1-6 are stewart joints,
-    #  but the name "head joint positions" is misleading. Consider:
-    #  - SLEEP_BODY_ROTATION = 0.0
-    #  - SLEEP_STEWART_JOINT_POSITIONS = [...]
-    SLEEP_HEAD_JOINT_POSITIONS = [
-        0,
+    SLEEP_BODY_YAW: float = 0.0
+    SLEEP_STEWART_POSITIONS = [
         -0.9848156658225817,
         1.2624661884298831,
         -0.24390294527381684,
@@ -658,3 +635,13 @@ class MotorController(ABC):
             "passive_7_y": self.head_kinematics.get_joint("passive_7_y"),  # type: ignore [union-attr]
             "passive_7_z": self.head_kinematics.get_joint("passive_7_z"),  # type: ignore [union-attr]
         }
+
+
+def pack_joints(body_yaw: float, stewart: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Pack body_yaw + 6 stewart joints into 7-elem array for FK/IK."""
+    return np.concatenate([[body_yaw], stewart])
+
+
+def unpack_joints(joints_7: NDArray[np.float64]) -> tuple[float, NDArray[np.float64]]:
+    """Unpack 7-elem FK/IK array into (body_yaw, stewart_6)."""
+    return float(joints_7[0]), joints_7[1:]

@@ -58,14 +58,11 @@ def build_state(
             result["target_head_pose"] = pose_from_numpy(target_pose, use_pose_matrix)
 
     if include_all or "head_joints" in _fields:
-        head_joints = mc.get_present_head_joint_positions()
-        # Exclude body_rotation at index 0
-        result["head_joints"] = list(head_joints[1:])
+        result["head_joints"] = list(mc.get_present_stewart_positions())
 
     if include_all or "target_head_joints" in _fields:
-        target = mc.target_head_joint_positions
-        if target is not None:
-            result["target_head_joints"] = list(target[1:])
+        if mc.target_stewart_positions is not None:
+            result["target_head_joints"] = list(mc.target_stewart_positions)
 
     if include_all or "body_rotation" in _fields:
         result["body_rotation"] = mc.get_present_body_yaw()

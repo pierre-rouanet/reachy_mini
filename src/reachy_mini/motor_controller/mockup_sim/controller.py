@@ -39,11 +39,11 @@ class MockupController(MotorController):
             kinematics_engine=kinematics_engine,
         )
 
-        # Initialize with sleep positions (7-element head: body_yaw + 6 stewart joints)
-        self._head_joint_positions: npt.NDArray[np.float64] = np.array(
-            self.SLEEP_HEAD_JOINT_POSITIONS, dtype=np.float64
+        self._body_yaw: float = self.SLEEP_BODY_YAW
+        self._stewart_positions: npt.NDArray[np.float64] = np.array(
+            self.SLEEP_STEWART_POSITIONS, dtype=np.float64
         )
-        self._antenna_joint_positions: npt.NDArray[np.float64] = np.array(
+        self._antenna_positions: npt.NDArray[np.float64] = np.array(
             self.SLEEP_ANTENNAS_JOINT_POSITIONS, dtype=np.float64
         )
 
@@ -54,16 +54,18 @@ class MockupController(MotorController):
 
     def _read_joint_positions(
         self,
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    ) -> tuple[float, npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Read current joint positions (returns stored positions)."""
-        return self._head_joint_positions.copy(), self._antenna_joint_positions.copy()
+        return self._body_yaw, self._stewart_positions.copy(), self._antenna_positions.copy()
 
     def _apply_targets(self) -> None:
         """Apply target positions immediately (no physics)."""
-        if self.target_head_joint_positions is not None:
-            self._head_joint_positions = self.target_head_joint_positions.copy()
+        if self.target_body_yaw is not None:
+            self._body_yaw = self.target_body_yaw
+        if self.target_stewart_positions is not None:
+            self._stewart_positions = self.target_stewart_positions.copy()
         if self.target_antenna_joint_positions is not None:
-            self._antenna_joint_positions = self.target_antenna_joint_positions.copy()
+            self._antenna_positions = self.target_antenna_joint_positions.copy()
 
     def get_motor_control_mode(self) -> MotorControlMode:
         """Get the motor control mode."""

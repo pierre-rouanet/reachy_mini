@@ -87,7 +87,7 @@ class RobotController(MotorController):
         self._current_head_operation_mode = -1
         self._current_antennas_operation_mode = -1
         self.target_antenna_joint_current = None
-        self.target_head_joint_current = None
+        self.target_stewart_current = None
 
         # Hardware error checking
         if hardware_error_check_frequency <= 0:
@@ -115,11 +115,11 @@ class RobotController(MotorController):
         self._last_hardware_error_check_time = time.time()
 
         # Compute forward kinematics for initial head pose (important for wake_up)
-        head_positions, _ = self._read_joint_positions()
-        self.current_head_pose = self.head_kinematics.fk(
-            np.array(head_positions),
-            no_iterations=20,
-        )
+        from reachy_mini.motor_controller.abstract import pack_joints
+
+        body_yaw, stewart, _ = self._read_joint_positions()
+        joints_7 = pack_joints(body_yaw, stewart)
+        self.current_head_pose = self.head_kinematics.fk(joints_7, no_iterations=20)
         assert self.current_head_pose is not None
         self.head_kinematics.ik(self.current_head_pose, no_iterations=20)
 
@@ -152,18 +152,15 @@ class RobotController(MotorController):
 
     def _read_joint_positions(
         self,
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    ) -> tuple[float, npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Read joint positions from motor controller."""
         assert self.c is not None, "Motor controller not initialized or already closed."
         positions = self.c.get_last_position()
 
-        yaw = positions.body_yaw
-        antennas = positions.antennas
-        dofs = positions.stewart
-
-        head_pos = np.array([yaw] + list(dofs))
-        antenna_pos = np.array(list(antennas))
-        return head_pos, antenna_pos
+        body_yaw = positions.body_yaw
+        stewart = np.array(positions.stewart)
+        antennas = np.array(positions.antennas)
+        return body_yaw, stewart, antennas
 
     def _apply_targets(self) -> None:
         """Apply target positions to motor controller."""
@@ -173,17 +170,18 @@ class RobotController(MotorController):
             return
 
         if self._current_head_operation_mode != 0:  # Position control mode
-            if self.target_head_joint_positions is not None:
+            if self.target_stewart_positions is not None:
                 self.c.set_stewart_platform_position(
-                    self.target_head_joint_positions[1:].tolist()
+                    self.target_stewart_positions.tolist()
                 )
-                self.c.set_body_rotation(self.target_head_joint_positions[0])
+            if self.target_body_yaw is not None:
+                self.c.set_body_rotation(self.target_body_yaw)
         else:  # Torque control mode
             if self.gravity_compensation_mode:
                 self.compensate_head_gravity()
-            if self.target_head_joint_current is not None:
+            if self.target_stewart_current is not None:
                 self.c.set_stewart_platform_goal_current(
-                    np.round(self.target_head_joint_current[1:], 0)
+                    np.round(self.target_stewart_current, 0)
                     .astype(int)
                     .tolist()
                 )
@@ -232,13 +230,12 @@ class RobotController(MotorController):
 
         if mode != 0:
             motor_pos = self.c.get_last_position()
-            self.target_head_joint_positions = np.array(
-                [motor_pos.body_yaw] + motor_pos.stewart
-            )
+            self.target_body_yaw = motor_pos.body_yaw
+            self.target_stewart_positions = np.array(motor_pos.stewart)
             self.c.set_stewart_platform_position(
-                self.target_head_joint_positions[1:].tolist()
+                self.target_stewart_positions.tolist()
             )
-            self.c.set_body_rotation(self.target_head_joint_positions[0])
+            self.c.set_body_rotation(self.target_body_yaw)
             self.c.enable_body_rotation(True)
             self.c.set_body_rotation_operating_mode(0)
         else:
@@ -348,15 +345,18 @@ class RobotController(MotorController):
             "Gravity compensation is only supported with the Placo kinematics engine."
         )
 
+        from reachy_mini.motor_controller.abstract import pack_joints, unpack_joints
+
         from_Nm_to_mA = 1.47 / 0.52 * 1000
         correction_factor = 4.0
 
-        head_joints = self.get_present_head_joint_positions()
+        joints_7 = pack_joints(self.current_body_yaw, self.get_present_stewart_positions())
         gravity_torque = self.head_kinematics.compute_gravity_torque(  # type: ignore [union-attr]
-            np.array(head_joints)
+            joints_7
         )
-        current = gravity_torque * from_Nm_to_mA / correction_factor
-        self.set_target_head_joint_current(current)
+        _, stewart_torque = unpack_joints(gravity_torque)
+        current = stewart_torque * from_Nm_to_mA / correction_factor
+        self.set_target_stewart_current(current)
 
     def _infer_control_mode(self) -> MotorControlMode:
         """Infer the current motor control mode from hardware state."""
