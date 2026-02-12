@@ -26,7 +26,8 @@ class Matrix4x4Pose(BaseModel):
     @classmethod
     def from_numpy(cls, arr: NDArray[np.float64]) -> "Matrix4x4Pose":
         """Create from a 4x4 numpy array."""
-        assert arr.shape == (4, 4), "Array must be of shape (4, 4)"
+        if arr.shape != (4, 4):
+            raise ValueError(f"Array must be of shape (4, 4), got {arr.shape}")
         m: tuple[
             float, float, float, float,
             float, float, float, float,
@@ -67,7 +68,8 @@ class XYZRPYPose(BaseModel):
     @classmethod
     def from_numpy(cls, arr: NDArray[np.float64]) -> "XYZRPYPose":
         """Create from a 4x4 numpy array."""
-        assert arr.shape == (4, 4), "Array must be of shape (4, 4)"
+        if arr.shape != (4, 4):
+            raise ValueError(f"Array must be of shape (4, 4), got {arr.shape}")
 
         x, y, z = arr[0, 3], arr[1, 3], arr[2, 3]
         roll, pitch, yaw = R.from_matrix(arr[:3, :3]).as_euler("xyz")

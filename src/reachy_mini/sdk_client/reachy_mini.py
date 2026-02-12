@@ -431,14 +431,11 @@ class ReachyMini:
         if body_yaw is not None and not isinstance(body_yaw, (int, float)):
             raise ValueError("body_yaw must be a float.")
 
-        if head is not None:
-            self.set_target_head_pose(head)
-
-        if antennas is not None:
-            self.set_target_antenna_joint_positions(list(antennas))
-
-        if body_yaw is not None:
-            self.set_target_body_yaw(body_yaw)
+        self._run_async(self._client.set_target(
+            head=head,
+            antennas=list(antennas) if antennas is not None else None,
+            body_rotation=body_yaw,
+        ))
 
     def goto_target(
         self,
@@ -908,12 +905,11 @@ class ReachyMini:
             t = min(time.time() - t0, move.duration - 1e-2)
 
             head, antennas, body_yaw = move.evaluate(t)
-            if head is not None:
-                self.set_target_head_pose(head)
-            if body_yaw is not None:
-                self.set_target_body_yaw(body_yaw)
-            if antennas is not None:
-                self.set_target_antenna_joint_positions(list(antennas))
+            self._run_async(self._client.set_target(
+                head=head,
+                antennas=list(antennas) if antennas is not None else None,
+                body_rotation=body_yaw,
+            ))
 
             elapsed = time.time() - t0 - t
             remaining = sleep_period - elapsed
